@@ -461,25 +461,7 @@ def _execute_tool_inner(tool_name, tool_input):
             if "name" in tool_input and tool_input["name"].lower() not in (d.get("name") or "").lower():
                 continue
             filtered.append(d)
-        # Simplify output
-        result_deals = []
-        for d in filtered[:tool_input.get('per_page', 20)]:
-            cf = d.get("custom_fields", {})
-            result_deals.append({
-                "id": d["id"], "name": d["name"],
-                "deal_status": (d.get("deal_status") or {}).get("name"),
-                "deal_stage": (d.get("deal_stage") or {}).get("name"),
-                "company": (d.get("company") or {}).get("name"),
-                "updated_at": d.get("updated_at"),
-                "type": cf.get("custom_label_1958"),
-                "gross_price": cf.get("custom_label_3064339"),
-                "net_price": cf.get("custom_label_3064369"),
-                "structure": cf.get("custom_label_3064360"),
-                "min_deal_size": cf.get("custom_label_3065488"),
-                "max_deal_size": cf.get("custom_label_3064645"),
-                "management_fee": cf.get("custom_label_3940558"),
-                "carry": cf.get("custom_label_3940559"),
-            })
+        result_deals = [_format_deal(d) for d in filtered[:tool_input.get('per_page', 20)]]
         return {"total": len(filtered), "deals": result_deals}
 
 
@@ -488,10 +470,10 @@ def _execute_tool_inner(tool_name, tool_input):
         deals = get_snapshot("deals.json")
         for d in deals:
             if d.get("id") == did:
-                return d
+                return _format_deal(d)
         # Fallback to live API
         result = call_pipeline_api("GET", f"/deals/{did}.json")
-        return result["data"] if result["status"] == 200 else {"error": f"Deal {did} not found"}
+        return _format_deal(result["data"]) if result["status"] == 200 else {"error": f"Deal {did} not found"}
 
     elif tool_name == "create_person":
         # Hard duplicate check — only block if the returned record actually has this exact email
