@@ -333,6 +333,73 @@ def execute_tool(tool_name, tool_input):
         logger.error(f"Tool error in {tool_name}: {e}")
         return {"error": str(e)}
 
+def _format_deal(d):
+    """Translate raw deal snapshot into labeled, human-readable fields."""
+    cf = d.get("custom_fields", {}) or {}
+
+    DEAL_TYPE_MAP = {5077819: "Buy Order", 5011675: "Sell Order"}
+    raw_type = cf.get("custom_label_1958")
+    deal_type = DEAL_TYPE_MAP.get(raw_type[0] if isinstance(raw_type, list) else raw_type)
+
+    STRUCTURE_MAP = {6250090: "Direct", 5077906: "Fund/SPV", 5077903: "Forward Contract"}
+    raw_structure = cf.get("custom_label_3064360")
+    structure = STRUCTURE_MAP.get(raw_structure[0] if isinstance(raw_structure, list) else raw_structure)
+
+    CLASS_MAP = {5077831: "Common", 5077834: "Preferred", 5077912: "Mixed", 5077915: "Any"}
+    deal_class = CLASS_MAP.get(cf.get("custom_label_3064330"))
+
+    NEXUS_MAP = {6460632: "Direct", 6460633: "RMS Broker", 6460635: "Co-Broker", 6460634: "Foreign Finder"}
+    nexus = NEXUS_MAP.get(cf.get("custom_label_3751449"))
+
+    LAYERS_MAP = {7000228: "SPV on cap table", 7000229: "2-Layer SPV", 7000230: "3-Layer SPV"}
+    layers = LAYERS_MAP.get(cf.get("custom_label_3938743"))
+
+    SERIES_MAP = {5077843: "A", 5077846: "B", 5077849: "C", 5077852: "D", 5077855: "E",
+                  5077858: "F", 5077861: "G", 5077864: "H", 5077867: "I", 5077918: "Mixed",
+                  6539216: "N", 5077837: "N/A", 5077840: "Seed"}
+    series = SERIES_MAP.get(cf.get("custom_label_3064333"))
+
+    def pct(val):
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+
+    return {
+        "id": d.get("id"),
+        "name": d.get("name"),
+        "deal_stage": (d.get("deal_stage") or {}).get("name"),
+        "deal_status": (d.get("deal_status") or {}).get("name"),
+        "company": (d.get("company") or {}).get("name"),
+        "company_id": d.get("company_id"),
+        "primary_contact_id": d.get("primary_contact_id"),
+        "updated_at": d.get("updated_at"),
+        "created_at": d.get("created_at"),
+        "deal_type": deal_type,
+        "structure": structure,
+        "class": deal_class,
+        "series": series,
+        "nexus": nexus,
+        "layers": layers,
+        "gross_price_per_share": cf.get("custom_label_3064339"),
+        "net_price_per_share": cf.get("custom_label_3064369"),
+        "min_deal_size": cf.get("custom_label_3065488"),
+        "max_deal_size": cf.get("custom_label_3064645"),
+        "num_shares": cf.get("custom_label_3070843"),
+        "management_fee_pct": pct(cf.get("custom_label_3940558")),
+        "carry_pct": pct(cf.get("custom_label_3940559")),
+        "seller_fee_pct": pct(cf.get("custom_label_3940560")),
+        "partner_fee_pct": pct(cf.get("custom_label_3940561")),
+        "chad_commission_rate": cf.get("custom_label_3814251"),
+        "seller_legal_name": cf.get("custom_label_3064355"),
+        "buyer_legal_name": cf.get("custom_label_3064356"),
+        "private_notes": cf.get("custom_label_3064357"),
+        "refresh_days": cf.get("custom_label_3994687"),
+        "pipeline_url": f"https://app.pipelinecrm.com/deals/{d.get('id')}",
+    }
+
 def _execute_tool_inner(tool_name, tool_input):
 
     if tool_name == "search_companies":
