@@ -242,6 +242,17 @@ TOOL_SPECS = [
     },
     {
         "toolSpec": {
+            "name": "compare_pdf_contacts",
+            "description": "Compare names and emails extracted from a PDF against the CRM snapshot to find who is already in Pipeline and who is not. Use this when Chad attaches a PDF (e.g. PitchBook investor list) and asks which people are or aren't already in his CRM. Pass the raw text from the PDF and optionally a security_name to also check holding/buy/sell interest. All matching is done in Python — no need to call get_person or search_people separately.",
+            "inputSchema": {"json": {"type": "object", "properties": {
+                "pdf_text": {"type": "string", "description": "Raw text extracted from the PDF containing names, emails, or company names to cross-reference"},
+                "security_name": {"type": "string", "description": "Optional: security name (e.g. 'Anthropic') — if provided, also checks whether matched CRM contacts already hold/buy/sell this security"},
+                "interest_type": {"type": "string", "description": "Optional: holding, buy, or sell — used with security_name to check interest field"}
+            }, "required": ["pdf_text"]}}
+        }
+    },
+    {
+        "toolSpec": {
             "name": "search_deals_cache",
             "description": "Search the deals cache to find buy or sell opportunities matching specific criteria. Use this for deal discovery queries like 'what deals would suit this investor', 'show me highlighted SpaceX deals', 'find sell-side deals under $1M'. Returns highlighted deals first. Supports filtering by company name, deal type (buy/sell), highlighted status, country, min/max size, structure, and series.",
             "inputSchema": {"json": {"type": "object", "properties": {
@@ -871,6 +882,107 @@ def _execute_tool_inner(tool_name, tool_input):
             "total_after_filtering": total_found,
             "returning": len(results),
             "investors": results
+        }
+
+    elif tool_name == "compare_pdf_contacts":
+        import re as _re
+        pdf_text = tool_input.get("pdf_text", "")
+        security_name = tool_input.get("security_name", "").strip()
+        interest_type = tool_input.get("interest_type", "holding").lower()
+
+        pdf_emails = set(e.lower().strip() for e in _re.findall(r'[\w.+%-]+@[\w.-]+\.[a-zA-Z]{2,}', pdf_text))
+
+        pdf_names = set()
+        for line in pdf_text.splitlines():
+            line = line.strip()
+            words = line.split()
+            if 2 <= len(words) <= 4 and all(w[0].isupper() for w in words if w.isalpha()):
+                pdf_names.add(line.lower())
+
+        people = get_snapshot("people.json")
+        email_index = {}
+        name_index = {}
+
+        for p in people:
+            email = (p.get("email") or "").lower().strip()
+            if email:
+                email_index[email] = p
+            full_name = f"{p.get('first_name','')} {p.get('last_name','')}".strip().lower()
+            if full_name:
+                name_index[full_name] = p
+
+        interest_ids = set()
+        interest_field = None
+        if security_name:
+            if security_name not in SECURITY_IDS:
+                name_lower = security_name.lower()
+                security_name = next((k for k in SECURITY_IDS if k.lower() == name_lower), security_name)
+            sec = SECURITY_IDS.get(security_name, {})
+            id_key = {"holding": "h", "buy": "b", "sell": "s"}.get(interest_type, "h")
+            eid = sec.get(id_key)
+            if eid:
+                interest_ids.add(eid)
+            interest_field = {"holding": "custom_label_3740611", "buy": "custom_label_3322093", "sell": "custom_label_3759156"}.get(interest_type)
+
+        def has_interest(p):
+            if not interest_ids or not interest_field:
+                return None
+            cf = p.get("custom_fields", {})
+            val = cf.get(interest_field, [])
+            ids = val if isinstance(val, list) else [val] if val else []
+            return bool(interest_ids & {int(x) for x in ids if x})
+
+        matched = []
+        not_found = []
+        seen_ids = set()
+
+        for email in pdf_emails:
+            p = email_index.get(email)
+            if p and p["id"] not in seen_ids:
+                seen_ids.add(p["id"])
+                matched.append({
+                    "name": f"{p.get('first_name','')} {p.get('last_name','')}".strip(),
+                    "email": p.get("email"),
+                    "company": p.get("company_name", ""),
+                    "pipeline_url": f"https://app.pipelinecrm.com/people/{p['id']}",
+                    "has_interest": has_interest(p),
+                    "match_type": "email"
+                })
+            elif not p:
+                not_found.append({"email": email, "name": None})
+
+        for name in pdf_names:
+            p = name_index.get(name)
+            if p and p["id"] not in seen_ids:
+                seen_ids.add(p["id"])
+                matched.append({
+                    "name": f"{p.get('first_name','')} {p.get('last_name','')}".strip(),
+                    "email": p.get("email"),
+                    "company": p.get("company_name", ""),
+                    "pipeline_url": f"https://app.pipelinecrm.com/people/{p['id']}",
+                    "has_interest": has_interest(p),
+                    "match_type": "name"
+                })
+
+        if security_name and interest_field:
+            already_marked = [m for m in matched if m["has_interest"]]
+            not_marked = [m for m in matched if not m["has_interest"]]
+        else:
+            already_marked = matched
+            not_marked = []
+
+        logger.info(f"compare_pdf_contacts: {len(pdf_emails)} emails + {len(pdf_names)} names from PDF → {len(matched)} CRM matches, {len(not_found)} not found")
+
+        return {
+            "pdf_emails_found": len(pdf_emails),
+            "pdf_names_found": len(pdf_names),
+            "in_crm": len(matched),
+            "not_in_crm": len(not_found),
+            "already_marked_interest": already_marked if security_name else None,
+            "in_crm_not_marked": not_marked if security_name else None,
+            "not_in_crm": not_found,
+            "security_checked": security_name or None,
+            "interest_type_checked": interest_type if security_name else None,
         }
 
     elif tool_name == "web_search":
