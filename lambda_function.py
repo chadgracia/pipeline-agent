@@ -1437,7 +1437,7 @@ def lambda_handler(event, context):
                 ses_client = boto3.client('ses', region_name='us-east-1')
                 ses_client.send_email(
                     Source='agent@agent.graciagroup.com',
-                    Destination={'ToAddresses': ['cgracia@graciagroup.com']},
+                    Destination={'ToAddresses': ['cgracia@rainmakersecurities.com']},
                     Message={
                         'Subject': {'Data': f'New signup: {signup_email}'},
                         'Body': {'Text': {'Data': answer}}
