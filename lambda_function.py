@@ -598,10 +598,15 @@ def _execute_tool_inner(tool_name, tool_input):
         return {"success": False, "status": result["status"], "error": result["data"]}
 
     elif tool_name == "update_company":
+        COMPANY_FIELD_MAP = {
+            "last_round_valuation": "custom_label_3790429",
+        }
         standard = {}
         custom = {}
         for k, v in tool_input["fields"].items():
-            if k.startswith("custom_label_"):
+            if k in COMPANY_FIELD_MAP:
+                custom[COMPANY_FIELD_MAP[k]] = v
+            elif k.startswith("custom_label_"):
                 custom[k] = v
             else:
                 standard[k] = v
