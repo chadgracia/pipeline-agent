@@ -16,6 +16,39 @@ _AGENT_DATA     = _load_agent_data()
 SECURITY_IDS    = _AGENT_DATA["security_ids"]
 _DEAL_FIELDS    = _AGENT_DATA["deal_fields"]
 
+INDUSTRY_MAP = {
+    "Advanced Materials": 5080477, "Advertising": 6041686, "Aerospace": 6291286,
+    "AgTech": 6411460, "AI": 5079682, "Analytics": 6323896, "Apps": 6041689,
+    "Augmented Reality": 6497595, "Autonomous Vehicles": 6041692, "B2B": 6498389,
+    "B2C": 6498390, "Batteries": 5080480, "Big Data": 5079691, "BioTech": 5079685,
+    "Business Intelligence": 7041664, "Cannabis": 6348286, "Construction": 6559224,
+    "Consumer": 6692138, "CRM": 6548509, "Crypto/Blockchain": 6437357,
+    "Cybersecurity": 5080471, "Database": 6543471, "Defense": 6773331,
+    "Delivery": 6558585, "Design": 6584819, "Developer Tools": 6584820,
+    "Drones": 6323887, "E-Commerce": 5079694, "EdTech": 5639584,
+    "Education": 6560147, "Electric Vehicles": 6925054, "Electronics": 6925055,
+    "Energy": 5099446, "Fashion/Retail": 6874488, "Finance": 6348289,
+    "FinTech": 5079676, "Food Delivery": 6687285, "Food&Beverage": 5622097,
+    "FoodTech": 6411463, "Funding Platform": 6681863, "Gaming": 6589044,
+    "GreenTech": 7005277, "Hardware": 6437358, "Healthcare": 5622091,
+    "Human Resources": 6661451, "IaaS": 5891584, "Impact Investing": 6771364,
+    "Information Services": 5865601, "Infrastructure": 6323899, "Insurance": 6558456,
+    "Internet": 6755652, "IoT": 6687287, "IT": 6538857, "Legal": 6668597,
+    "Lifestyle": 5079697, "Logistics": 6674874, "Machine Learning": 6323902,
+    "Management": 6323905, "Manufacturing": 6322129, "Marketing": 6041695,
+    "Marketplace": 6674875, "Media": 6322132, "Mining": 6774700,
+    "Movies, Music and Entertainment": 6506196, "NanoTech": 6925056,
+    "Oil & Gas": 6755654, "Packaging": 6876091, "Pharma": 6755653,
+    "Publishing": 6563263, "Real Estate": 6446568,
+    "Renewables / Clean Energy": 5527627, "Resources": 6771365,
+    "Restaurant": 6973702, "Robotics": 6323890, "Saas": 6041698,
+    "Sharing Economy": 5141053, "Social Media": 5079688, "Software": 5080483,
+    "Sports": 6751585, "SRI / ESG": 6438707, "Technology": 6323893,
+    "Telecom": 5080474, "TMT": 6543472, "Transport": 5079679, "Travel": 6323884,
+    "Utilities": 6755655, "Virtual Reality": 6774699, "Water": 5527624,
+    "Web3": 6786914, "Wellness": 6726243, "PropTech": 7129933,
+}
+
 def _load_system_prompt():
     s3 = boto3.client('s3')
     obj = s3.get_object(Bucket="pipeline-token", Key="agent-system-prompt.txt")
@@ -181,7 +214,8 @@ TOOL_SPECS = [
             "description": "Update a company record fields.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "company_id": {"type": "integer"},
-                "fields": {"type": "object"}
+                "fields": {"type": "object"},
+                "industry": {"type": "array", "items": {"type": "string"}, "description": "List of industry tags e.g. [\"AI\", \"Defense\", \"Robotics\"]. Will be mapped to entry IDs automatically and merged with existing values."}
             }, "required": ["company_id", "fields"]}}
         }
     },
@@ -199,7 +233,8 @@ TOOL_SPECS = [
                 "last_round_series": {"type": "string", "description": "Last round series e.g. A, B, C, Seed"},
                 "website": {"type": "string", "description": "Company website"},
                 "address": {"type": "string", "description": "Company address"},
-                "legal_name": {"type": "string", "description": "Full legal name"}
+                "legal_name": {"type": "string", "description": "Full legal name"},
+                "industry": {"type": "array", "items": {"type": "string"}, "description": "List of industry tags e.g. [\"AI\", \"Defense\", \"Robotics\"]. Will be mapped to entry IDs automatically."}
             }, "required": ["name"]}}
         }
     },
@@ -610,8 +645,12 @@ def _execute_tool_inner(tool_name, tool_input):
                 custom[k] = v
             else:
                 standard[k] = v
+        if tool_input.get("industry"):
+            industry_ids = [INDUSTRY_MAP[i] for i in tool_input["industry"] if i in INDUSTRY_MAP]
+            if industry_ids:
+                custom["custom_label_3065122"] = industry_ids
         # For multi-select fields, fetch existing and merge — send as JSON arrays
-        COMPANY_MULTI_SELECT = {"custom_label_3749627", "custom_label_3749628", "custom_label_3746654"}
+        COMPANY_MULTI_SELECT = {"custom_label_3749627", "custom_label_3749628", "custom_label_3746654", "custom_label_3065122"}
         if any(k in COMPANY_MULTI_SELECT for k in custom):
             existing = call_pipeline_api("GET", f"/companies/{tool_input['company_id']}.json")
             if existing["status"] == 200:
@@ -664,6 +703,10 @@ def _execute_tool_inner(tool_name, tool_input):
             custom_fields["custom_label_3826032"] = tool_input["last_round_date"]
         if tool_input.get("last_round_series"):
             custom_fields["custom_label_3914626"] = tool_input["last_round_series"]
+        if tool_input.get("industry"):
+            industry_ids = [INDUSTRY_MAP[i] for i in tool_input["industry"] if i in INDUSTRY_MAP]
+            if industry_ids:
+                custom_fields["custom_label_3065122"] = industry_ids
         if custom_fields:
             company_data["custom_fields"] = custom_fields
         result = call_pipeline_api("POST", "/companies.json", {"company": company_data})
