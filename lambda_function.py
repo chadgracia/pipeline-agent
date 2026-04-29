@@ -194,8 +194,9 @@ TOOL_SPECS = [
                 "summary": {"type": "string"},
                 "org_type": {"type": "integer", "description": "Org type entry ID e.g. 6677589=Private Company, 5103523=Unicorn, 6298036=Public Company, 4497856=GP:VC, 444501=GP:PE, 444492=LP:Family Office"},
                 "last_round_pps": {"type": "number", "description": "Last round price per share"},
-                "last_round_valuation": {"type": "number", "description": "Last round valuation in whole dollars"},
+                "last_round_valuation": {"type": "number", "description": "Last round valuation in billions (e.g. $7.6B = 7.6, $18B = 18.0)"},
                 "last_round_date": {"type": "string", "description": "Last round date in YYYY-MM-DD format"},
+                "last_round_series": {"type": "string", "description": "Last round series e.g. A, B, C, Seed"},
                 "website": {"type": "string", "description": "Company website"},
                 "address": {"type": "string", "description": "Company address"},
                 "legal_name": {"type": "string", "description": "Full legal name"}
@@ -640,14 +641,14 @@ def _execute_tool_inner(tool_name, tool_input):
     elif tool_name == "create_company":
         company_data = {"name": tool_input["name"]}
         if tool_input.get("summary"):
-            company_data["summary"] = tool_input["summary"]
+            company_data["description"] = tool_input["summary"]
         if tool_input.get("website"):
-            company_data["website"] = tool_input["website"]
+            company_data["web"] = tool_input["website"]
         if tool_input.get("address"):
-            company_data["address"] = tool_input["address"]
-        if tool_input.get("legal_name"):
-            company_data["legal_name"] = tool_input["legal_name"]
+            company_data["address_1"] = tool_input["address"]
         custom_fields = {}
+        if tool_input.get("legal_name"):
+            custom_fields["custom_label_3769275"] = tool_input["legal_name"]
         if tool_input.get("org_type"):
             custom_fields["custom_label_625142"] = tool_input["org_type"]
         if tool_input.get("last_round_pps") is not None:
@@ -655,7 +656,9 @@ def _execute_tool_inner(tool_name, tool_input):
         if tool_input.get("last_round_valuation") is not None:
             custom_fields["custom_label_3790429"] = tool_input["last_round_valuation"]
         if tool_input.get("last_round_date"):
-            custom_fields["custom_label_3064364"] = tool_input["last_round_date"]
+            custom_fields["custom_label_3826032"] = tool_input["last_round_date"]
+        if tool_input.get("last_round_series"):
+            custom_fields["custom_label_3914626"] = tool_input["last_round_series"]
         if custom_fields:
             company_data["custom_fields"] = custom_fields
         result = call_pipeline_api("POST", "/companies.json", {"company": company_data})
