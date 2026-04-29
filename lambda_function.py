@@ -1134,6 +1134,29 @@ def _execute_tool_inner(tool_name, tool_input):
         if tool_input.get("num_shares"):
             custom_fields["custom_label_3070843"] = float(tool_input["num_shares"])
 
+        # Auto-set CP Direct and Nexus from primary contact's Role, unless explicitly provided
+        nexus_explicit = tool_input.get("nexus") in nexus_map
+        cp_direct_explicit = "cp_direct" in tool_input
+        if not (nexus_explicit and cp_direct_explicit):
+            role = None
+            try:
+                contact = call_pipeline_api("GET", f"/people/{tool_input['primary_contact_id']}.json")
+                if contact["status"] == 200:
+                    role_val = (contact["data"].get("custom_fields") or {}).get("custom_label_3075382")
+                    role = role_val[0] if isinstance(role_val, list) and role_val else role_val
+            except Exception as e:
+                logger.warning(f"create_deal: failed to fetch role for contact {tool_input.get('primary_contact_id')}: {e}")
+            if role == 6438705:  # Intermediary
+                if not cp_direct_explicit:
+                    custom_fields["custom_label_3065662"] = 5080987  # No
+                if not nexus_explicit:
+                    custom_fields["custom_label_3751449"] = 6460635  # Co-Broker
+            else:  # Investor (6596061) or blank/unset
+                if not cp_direct_explicit:
+                    custom_fields["custom_label_3065662"] = 5080984  # Yes
+                if not nexus_explicit:
+                    custom_fields["custom_label_3751449"] = 6460632  # Direct
+
         payload = {"deal": {
             "name": tool_input["name"],
             "company_id": tool_input["company_id"],
