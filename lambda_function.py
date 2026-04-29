@@ -1408,6 +1408,13 @@ def lambda_handler(event, context):
                             existing_person = entry
                             break
 
+                if not existing_person:
+                    people = get_snapshot("people.json")
+                    for p in people:
+                        if (p.get("email") or "").lower().strip() == signup_email.lower().strip():
+                            existing_person = p
+                            break
+
                 if existing_person:
                     pid = existing_person["id"]
                     pname = f"{existing_person.get('first_name','')} {existing_person.get('last_name','')}".strip()
