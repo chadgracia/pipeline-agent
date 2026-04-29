@@ -187,6 +187,17 @@ TOOL_SPECS = [
     },
     {
         "toolSpec": {
+            "name": "create_company",
+            "description": "Create a new company record in Pipeline CRM.",
+            "inputSchema": {"json": {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "summary": {"type": "string"},
+                "org_type": {"type": "integer", "description": "Org type entry ID e.g. 6677589=Private Company, 5103523=Unicorn, 6298036=Public Company, 4497856=GP:VC, 444501=GP:PE, 444492=LP:Family Office"}
+            }, "required": ["name"]}}
+        }
+    },
+    {
+        "toolSpec": {
             "name": "add_note",
             "description": "Add a note to a person, company, or deal record. note_category_id options: 69759=Email, 69774=Phone Call, 69758=In Person Meeting, 69760=Background, 69761=Biographical, 69773=Sensitive. Default is Email (69759) if not specified.",
             "inputSchema": {"json": {"type": "object", "properties": {
@@ -618,6 +629,26 @@ def _execute_tool_inner(tool_name, tool_input):
         result = call_pipeline_api("PUT", f"/companies/{tool_input['company_id']}.json", payload)
         if result["status"] == 200:
             return {"success": True, "message": "Record updated. Do not verify or retry — report success to the user."}
+        return {"success": False, "status": result["status"], "error": result["data"]}
+
+    elif tool_name == "create_company":
+        company_data = {"name": tool_input["name"]}
+        if tool_input.get("summary"):
+            company_data["summary"] = tool_input["summary"]
+        custom_fields = {}
+        if tool_input.get("org_type"):
+            custom_fields["custom_label_625142"] = tool_input["org_type"]
+        if custom_fields:
+            company_data["custom_fields"] = custom_fields
+        result = call_pipeline_api("POST", "/companies.json", {"company": company_data})
+        if result["status"] == 200:
+            new_id = result["data"].get("id")
+            return {
+                "success": True,
+                "company_id": new_id,
+                "pipeline_url": f"https://app.pipelinecrm.com/companies/{new_id}",
+                "message": "Company created successfully."
+            }
         return {"success": False, "status": result["status"], "error": result["data"]}
 
     elif tool_name == "add_note":
