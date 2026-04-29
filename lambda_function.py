@@ -308,7 +308,8 @@ TOOL_SPECS = [
                 "carry": {"type": "number", "description": "SPV carry percentage"},
                 "seller_fee": {"type": "number", "description": "One-time upfront seller fee % (not annual). Use for 'upfront fee', 'one-time fee', or 'seller fee' mentions."},
                 "partner_fee": {"type": "number", "description": "Fee % charged by a co-broker, foreign finder, or other intermediary that is NOT covered by our standard fee-sharing agreement. Use this when a third party is charging their own separate fee to the client that Chad does not share in."},
-                "layers": {"type": "string", "enum": ["SPV on cap table", "2-Layer SPV", "3-Layer SPV"], "description": "SPV layer structure"}
+                "layers": {"type": "string", "enum": ["SPV on cap table", "2-Layer SPV", "3-Layer SPV"], "description": "SPV layer structure"},
+                "num_shares": {"type": "number", "description": "Number of shares in the deal"}
             }, "required": ["name", "company_id", "primary_contact_id", "deal_stage_id", "deal_type"]}}
         }
     },
@@ -1073,6 +1074,8 @@ def _execute_tool_inner(tool_name, tool_input):
             custom_fields["custom_label_3940561"] = float(tool_input["partner_fee"])
         if tool_input.get("layers") in layers_map:
             custom_fields["custom_label_3938743"] = layers_map[tool_input["layers"]]
+        if tool_input.get("num_shares"):
+            custom_fields["custom_label_3070843"] = float(tool_input["num_shares"])
 
         payload = {"deal": {
             "name": tool_input["name"],
@@ -1106,6 +1109,7 @@ def _execute_tool_inner(tool_name, tool_input):
             "net":            "custom_label_3064369",
             "min_size":       "custom_label_3065488",
             "max_size":       "custom_label_3064645",
+            "num_shares":     "custom_label_3070843",
         }
         DEAL_ENUM_MAP = {
             "deal_type": _DEAL_FIELDS["deal_type"]["values"],
