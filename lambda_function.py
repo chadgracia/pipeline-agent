@@ -5,6 +5,12 @@ import urllib.error
 import urllib.parse
 import logging
 import re
+from datetime import date
+
+HIIVE_ASK_FIELD       = "custom_label_3997297"
+HIIVE_BID_FIELD       = "custom_label_3997298"
+HIIVE_ASK_DATE_FIELD  = "custom_label_3997299"
+HIIVE_BID_DATE_FIELD  = "custom_label_3997300"
 
 # ── Load agent data from S3 at cold start ─────────────────────────────────────
 def _load_agent_data():
@@ -211,10 +217,10 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "update_company",
-            "description": "Update a company record fields.",
+            "description": "Update a company record fields. Hiive market data fields: hiive_bid (custom_label_3997298) = highest bid price on Hiive (currency, per share), hiive_ask (custom_label_3997297) = lowest ask price on Hiive (currency, per share). The corresponding date fields (custom_label_3997299 ask date, custom_label_3997300 bid date) are set automatically to today when bid or ask is updated — never pass them explicitly.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "company_id": {"type": "integer"},
-                "fields": {"type": "object"},
+                "fields": {"type": "object", "description": "Fields to update. Includes Hiive market data: custom_label_3997298=hiive_bid (highest bid, per share), custom_label_3997297=hiive_ask (lowest ask, per share). Bid/ask date fields are auto-set to today — never pass them explicitly."},
                 "industry": {"type": "array", "items": {"type": "string"}, "description": "List of industry tags e.g. [\"AI\", \"Defense\", \"Robotics\"]. Will be mapped to entry IDs automatically and merged with existing values."}
             }, "required": ["company_id", "fields"]}}
         }
@@ -651,6 +657,11 @@ def _execute_tool_inner(tool_name, tool_input):
                 custom["custom_label_3065122"] = industry_ids
         # For multi-select fields, fetch existing and merge — send as JSON arrays
         COMPANY_MULTI_SELECT = {"custom_label_3749627", "custom_label_3749628", "custom_label_3746654", "custom_label_3065122"}
+        today = date.today().strftime("%Y-%m-%d")
+        if HIIVE_BID_FIELD in custom:
+            custom[HIIVE_BID_DATE_FIELD] = today
+        if HIIVE_ASK_FIELD in custom:
+            custom[HIIVE_ASK_DATE_FIELD] = today
         if any(k in COMPANY_MULTI_SELECT for k in custom):
             existing = call_pipeline_api("GET", f"/companies/{tool_input['company_id']}.json")
             if existing["status"] == 200:
