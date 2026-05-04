@@ -657,11 +657,14 @@ def _execute_tool_inner(tool_name, tool_input):
                 custom["custom_label_3065122"] = industry_ids
         # For multi-select fields, fetch existing and merge — send as JSON arrays
         COMPANY_MULTI_SELECT = {"custom_label_3749627", "custom_label_3749628", "custom_label_3746654", "custom_label_3065122"}
+        logger.info(f"update_company custom keys: {list(custom.keys())}")
         today = date.today().strftime("%Y-%m-%d")
-        if HIIVE_BID_FIELD in custom:
+        if HIIVE_BID_FIELD in custom or "custom_label_3997298" in custom:
             custom[HIIVE_BID_DATE_FIELD] = today
-        if HIIVE_ASK_FIELD in custom:
+            custom["custom_label_3997300"] = today
+        if HIIVE_ASK_FIELD in custom or "custom_label_3997297" in custom:
             custom[HIIVE_ASK_DATE_FIELD] = today
+            custom["custom_label_3997299"] = today
         if any(k in COMPANY_MULTI_SELECT for k in custom):
             existing = call_pipeline_api("GET", f"/companies/{tool_input['company_id']}.json")
             if existing["status"] == 200:
