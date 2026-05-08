@@ -641,6 +641,8 @@ def _execute_tool_inner(tool_name, tool_input):
     elif tool_name == "update_company":
         COMPANY_FIELD_MAP = {
             "last_round_valuation": "custom_label_3790429",
+            "hiive_bid":            "custom_label_3997298",
+            "hiive_ask":            "custom_label_3997297",
         }
         standard = {}
         custom = {}
