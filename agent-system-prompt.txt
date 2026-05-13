@@ -375,4 +375,3 @@ corresponding date field as today's date when clearing.
   Company: https://app.pipelinecrm.com/companies/{id}
   Deal: https://app.pipelinecrm.com/deals/{id}
 - Chad is a registered representative — all changes are subject to FINRA record-keeping requirements
-X
