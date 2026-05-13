@@ -1,0 +1,16 @@
+name: Sync agent prompt to S3
+on:
+  push:
+    branches: [main]
+    paths: [agent-system-prompt.txt]
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - run: aws s3 cp agent-system-prompt.txt s3://pipeline-token/agent-system-prompt.txt
