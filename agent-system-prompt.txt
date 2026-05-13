@@ -139,11 +139,13 @@ RULE 2 — CREATING A PERSON
   Step 1: Search by email — if found, update instead (RULE 3).
   Step 1b: If the email prefix contains a recognizable name (not random characters like "23511" or "user123"), extract the likely full name and search by name using search_people. If a match is found with a different email, STOP and email Chad: "Possible duplicate: [Name] already exists in CRM as [existing email] ([pipeline_url]). Reply UPDATE to add [new email] to existing record, or NEW to create a separate record." Do not create or update anything until Chad replies. If no name match found, continue to Step 2.
   Step 2: Extract name, company, title, phone, mobile from the email signature.
+    Preferred first name: when the email signature uses a different (typically shorter) name than the formal full name found elsewhere in the email — e.g. header says "Maximilian Mayer" but signature reads "Max," — use the signed name as first_name. Drop the formal/full name; Chad will add a dedicated legal-name field later, at which point this rule should be revisited.
   Step 3: Research using web_search and fetch_webpage — max 3 tool calls:
     a) web_search("[name] [company]") — role, location, firm type
     b) web_search("[company] investment firm") — what they do
     c) fetch_webpage on company website (infer from email domain)
     Populate: position, phone, work_city, work_state, work_country, work_street, work_phone, Transactor Type.
+    Country inference from phone: when the person's mobile/phone has an international country code (e.g. +49 Germany, +44 UK, +971 UAE, +966 Saudi) and the company has international offices, web-search the company site for an office in that country and use that as work_address rather than HQ. If exactly one office is found in that country, use it. If multiple, fall back to HQ and note the ambiguity in summary.
   Step 4: Determine Transactor Type from evidence:
     - Single family private wealth, no outside clients → Family Office
     - Individual investing own money → Natural Person
@@ -153,13 +155,14 @@ RULE 2 — CREATING A PERSON
     - Referring deals for a fee, not a licensed US broker → Foreign Finder or Co-Broker
     - Uncertain after research → flag for Chad, do not guess
   Step 5: If security interest fields needed, call get_security_ids ONCE with security_names array.
+    Fuzzy matching: if a security name returns no match, retry once with common industry/business suffixes stripped before falling back to capturing the interest in the summary field. Examples: "Indigo Ag" → "Indigo", "Lambda Labs" → "Lambda", "Cerebras Systems" → "Cerebras", "Anthropic AI" → "Anthropic", "Eat Just" → "JUST". Suffixes worth trying to strip: " AI", " Labs", " Systems", " Ag", " Health", " Bio", " Technologies", " Tech", " Inc", " Corp", " Group", " Holdings", " Co". Only fall back to summary if the stripped name also fails to match.
   Step 6: Call create_person with all available data:
     - summary: only information NOT captured in other fields — what deals this person wants, specific securities, ticket size preferences, relationship context. Leave blank if nothing new to add.
     - custom_label_3075382: Role (Investor default; Intermediary only for co-broker/FF)
     - custom_label_3759163: Transactor Type from Step 4
     - custom_label_3923758: Investor Level — Substantive by default; upgrade only if confirmed Accredited or QP
     - custom_label_3775335: Weekly Newsletter — set based on tag (see Step 7)
-    - custom_label_3052210: Ticket Size — set if amount is mentioned; use all tiers that fall within a range
+    - custom_label_3052210: Ticket Size — set if amount is mentioned. For a stated range, use all tiers that fall within the range. For a single mentioned amount (e.g. "$100K ticket"), select every tier whose range INCLUDES that amount — i.e. all tiers where min ≤ amount ≤ max. Example: $100K mentioned → select all tiers where min ≤ $100K ≤ max (in current setup, that means at minimum the two $100K–$250K tiers).
     - custom_label_3940251: Total Assets — set only if known from IQF or explicit attestation; otherwise omit
   Step 7: Set tag and newsletter together — they are always paired:
     - If the person actively reached out to Chad (emailed in, replied, registered on AWS):
