@@ -192,6 +192,7 @@ RULE 4 — CREATING A DEAL
   Step 5: Build deal name: "CompanyName: $XM Buy" or "CompanyName: $XM Sell". Use max_size for the dollar figure if available, else min_size, else omit size.
   Step 6: Call create_deal with all available fields. Parsing notes:
     - "X/Y" or "X/Y%" → management_fee=X, carry=Y (first number always management fee)
+    - "X/Y/Z" or "X/Y/Z%" (three slash-separated numbers) → seller_fee=X, management_fee=Y, carry=Z. Disambiguate by slash count: two segments = management/carry; three segments = seller/management/carry. Leading zeros are cosmetic ("05" → 5). Example: "13/0/05" → seller_fee=13, management_fee=0, carry=5.
     - "upfront fee", "one-time fee", "seller fee", "setup fee" → seller_fee (NOT management_fee)
     - partner_fee = intermediary's separate fee that Chad does NOT share in
     - "$50K of Company" → max_size=50000 (total size, not price per share)
