@@ -1550,8 +1550,9 @@ def run_agent(instruction, attachments=None):
 def send_reply(to_address, subject, body_text):
     ses = boto3.client('ses', region_name='us-east-1')
     ses.send_email(
-        Source='cgracia@graciagroup.com',
+        Source='agent@agent.graciagroup.com',
         Destination={'ToAddresses': [to_address]},
+        ReplyToAddresses=['agent@agent.graciagroup.com'],
         Message={
             'Subject': {'Data': f"Re: {subject}"},
             'Body': {'Text': {'Data': body_text}}
@@ -1677,6 +1678,7 @@ def lambda_handler(event, context):
                 ses_client.send_email(
                     Source='agent@agent.graciagroup.com',
                     Destination={'ToAddresses': ['cgracia@rainmakersecurities.com']},
+                    ReplyToAddresses=['agent@agent.graciagroup.com'],
                     Message={
                         'Subject': {'Data': f'New signup: {signup_email}'},
                         'Body': {'Text': {'Data': answer}}
