@@ -107,6 +107,66 @@ def get_snapshot(key):
             _snapshot_cache[key] = []
     return _snapshot_cache[key]
 
+# ── Live-API refresh for SECURITY_IDS ─────────────────────────────────────────
+# Roles map Pipeline custom-field IDs to the role keys used in SECURITY_IDS.
+_SECURITY_FIELD_ROLES = {3322093: "b", 3759156: "s", 3740611: "h"}
+
+def _refresh_security_ids_from_api():
+    """Fetch the live person custom-field dropdowns for the three security
+    interest fields and merge entries into module-level SECURITY_IDS.
+    Returns True on success, False on failure (logged, never raises)."""
+    try:
+        result = call_pipeline_api(
+            "GET",
+            "/admin/custom_field_labels.json?conditions[entity_type]=person",
+        )
+    except Exception as e:
+        logger.error(f"_refresh_security_ids_from_api: request failed: {e}")
+        return False
+    if result.get("status") != 200:
+        logger.error(
+            f"_refresh_security_ids_from_api: status={result.get('status')} "
+            f"data={str(result.get('data'))[:200]}"
+        )
+        return False
+    body = result.get("data") or {}
+    if isinstance(body, dict):
+        labels = (body.get("custom_field_labels")
+                  or body.get("entries")
+                  or body.get("data")
+                  or [])
+    elif isinstance(body, list):
+        labels = body
+    else:
+        labels = []
+    merged = {}
+    for label in labels:
+        if not isinstance(label, dict):
+            continue
+        lid = label.get("id")
+        role = _SECURITY_FIELD_ROLES.get(lid)
+        if not role:
+            continue
+        entries = label.get("custom_field_label_dropdown_entries") or []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            eid = entry.get("id")
+            if not name or not eid:
+                continue
+            slot = merged.setdefault(name, {"h": None, "b": None, "s": None})
+            slot[role] = int(eid)
+    if not merged:
+        logger.error("_refresh_security_ids_from_api: no security entries parsed")
+        return False
+    for name, ids in merged.items():
+        SECURITY_IDS[name] = ids
+    logger.info(
+        f"_refresh_security_ids_from_api: refreshed {len(merged)} security entries"
+    )
+    return True
+
 # ── Call Pipeline CRM API ─────────────────────────────────────────────────────
 def call_pipeline_api(method, endpoint, payload=None):
     base_url = "https://api.pipelinecrm.com/api/v3"
@@ -754,7 +814,7 @@ def _execute_tool_inner(tool_name, tool_input):
                 "sell_interest_entry_id": v.get("s"),
                 "usage": "Use buy_interest_entry_id when adding to custom_label_3322093 (people buying), sell_interest_entry_id for custom_label_3759156 (people selling), holding_entry_id for custom_label_3740611 (people holding)"
             }
-        def lookup_one(name):
+        def snapshot_lookup(name):
             if name in SECURITY_IDS:
                 return format_ids(name, SECURITY_IDS[name])
             name_lower = name.lower()
@@ -764,6 +824,35 @@ def _execute_tool_inner(tool_name, tool_input):
             matches = [(k, v) for k, v in SECURITY_IDS.items() if name_lower in k.lower()]
             if matches:
                 return {"matches": [format_ids(k, v) for k, v in matches[:5]]}
+            return None
+        def legal_name_retry(name):
+            companies = get_snapshot("companies.json")
+            name_lower = name.lower()
+            for c in companies:
+                cname = (c.get("name") or "")
+                legal = (c.get("custom_fields", {}) or {}).get("custom_label_3769275") or ""
+                if not legal or legal.lower() == cname.lower():
+                    continue
+                if name_lower == cname.lower():
+                    alt = snapshot_lookup(legal)
+                    if alt is not None:
+                        return alt
+                if name_lower == legal.lower():
+                    alt = snapshot_lookup(cname)
+                    if alt is not None:
+                        return alt
+            return None
+        def lookup_one(name):
+            result = snapshot_lookup(name)
+            if result is not None:
+                return result
+            if _refresh_security_ids_from_api():
+                result = snapshot_lookup(name)
+                if result is not None:
+                    return result
+            alt = legal_name_retry(name)
+            if alt is not None:
+                return alt
             return {"error": f"Security '{name}' not found in lookup table"}
         names = tool_input.get("security_names")
         if names:
