@@ -1633,7 +1633,7 @@ def lambda_handler(event, context):
                 existing_person = None
                 if existing_check["status"] == 200:
                     for entry in existing_check["data"].get("entries", []):
-                        if entry.get("email", "").lower().strip() == signup_email:
+                        if (entry.get("email") or "").lower().strip() == signup_email:
                             existing_person = entry
                             break
 
