@@ -307,7 +307,7 @@ RULE 13 — CREATING A COMPANY
     a) web_search("[company name]") — what the company does, sector, stage, last round
     b) fetch_webpage on company website if found
   Step 3: Determine Org Type from research and set custom_label_625142:
-    - Pre-IPO private tech company being traded → Private Company (6677589) or Unicorn (5103523) if valuation > $1B
+    - Pre-IPO private company whose shares are traded (an issuer) → Traded Issuer (5103523), regardless of valuation
     - Publicly traded → Public Company (6298036)
     - VC fund → GP: VC (4497856)
     - PE fund → GP: PE (444501)
