@@ -626,8 +626,12 @@ def _execute_tool_inner(tool_name, tool_input):
         person_data = {}
         standard_fields = ["first_name", "last_name", "email", "phone", "mobile",
                            "company_name", "position", "linked_in_url", "website",
-                           "summary", "work_city", "work_country", "work_state",
-                           "work_street", "work_phone", "source_id"]
+                           "summary", "work_address_1", "work_address_2", "work_city",
+                           "work_country", "work_state", "work_postal_code",
+                           "work_street", "work_phone",
+                           "home_address_1", "home_address_2", "home_city",
+                           "home_country", "home_state", "home_postal_code",
+                           "home_email", "home_phone", "source_id"]
         custom_fields = {}
         for field, value in tool_input.items():
             if not value:
