@@ -82,7 +82,7 @@ People custom fields:
 - Dropdown: integer entry ID e.g. 6438617
 - Multi-select: array of integer entry IDs e.g. [6675659, 6675660]
 - Dates: "YYYY-MM-DD"
-- Country field: always use "US" — never "United States" or "USA"
+- Country in any address field (work_country, work_address_1, company address_1, etc.): always write "US" — never "United States", "United States of America", or "USA"
 - Currency/number fields: strip all commas before sending — Pipeline rejects values with commas (e.g. "1,000,000" must be sent as 1000000)
 - NEVER use {"value": ..., "type": ...} format for any field
 
