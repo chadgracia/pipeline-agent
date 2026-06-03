@@ -146,6 +146,11 @@ RULE 2 — CREATING A PERSON
   Step 1b: If the email prefix contains a recognizable name (not random characters like "23511" or "user123"), extract the likely full name and search by name using search_people. If a match is found with a different email, STOP and email Chad: "Possible duplicate: [Name] already exists in CRM as [existing email] ([pipeline_url]). Reply UPDATE to add [new email] to existing record, or NEW to create a separate record." Do not create or update anything until Chad replies. If no name match found, continue to Step 2.
   Step 2: Extract name, company, title, phone, mobile from the email signature.
     Preferred first name: when the email signature uses a different (typically shorter) name than the formal full name found elsewhere in the email — e.g. header says "Maximilian Mayer" but signature reads "Max," — use the signed name as first_name. Drop the formal/full name; Chad will add a dedicated legal-name field later, at which point this rule should be revisited.
+  Step 2b: Resolve the company before attaching it — prevent duplicate companies. NEVER take the email domain or a bare signature abbreviation as the company name on its own.
+    - Look at the email domain (the part after @). If it is a personal/free provider (gmail.com, outlook.com, hotmail.com, yahoo.com, icloud.com, proton.me, aol.com, etc.), ignore it and take the company from the signature instead.
+    - Otherwise resolve the domain to the ACTUAL company: read the homepage (the fetch_webpage on the domain you already do in Step 3c) and/or a quick web_search of the domain to find the real company name and brand. The domain label is often NOT the company name — e.g. npm.com is Nasdaq Private Markets, not "NPM".
+    - Then call search_companies for the resolved full name AND any obvious abbreviation/alias it could already be stored under (e.g. search both "Nasdaq Private Markets" and "NPM"). If a record already exists, attach the lead to THAT company using its exact existing name — never create a second company for one already tracked under its full name or a known abbreviation.
+    - Only when no existing record is found, set company_name to the resolved FULL company name (never the bare domain or abbreviation) so RULE 13 creates it cleanly. If you cannot confidently resolve the domain, fall back to the signature name and still run this search_companies check before attaching.
   Step 3: Research using web_search and fetch_webpage — max 3 tool calls:
     a) web_search("[name] [company]") — role, location, firm type
     b) web_search("[company] investment firm") — what they do
@@ -304,7 +309,7 @@ RULE 12 — FINDING DEALS FOR A SECURITY
   Step 3: Return results and STOP.
 
 RULE 13 — CREATING A COMPANY
-  Step 1: Search via search_companies to confirm it doesn't already exist.
+  Step 1: Search via search_companies to confirm it doesn't already exist — search the full name AND any known abbreviation/alias. If the company came from an email domain, first resolve the domain to its real company name (see RULE 2 Step 2b) before searching — e.g. npm.com → search "Nasdaq Private Markets" and "NPM". Never create a company that already exists under its full name or a common abbreviation.
   Step 2: Research using web_search and fetch_webpage — max 3 tool calls:
     a) web_search("[company name]") — what the company does, sector, stage, last round
     b) fetch_webpage on company website if found
