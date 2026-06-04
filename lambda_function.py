@@ -649,7 +649,7 @@ def _execute_tool_inner(tool_name, tool_input):
             pipeline_url = f"https://app.pipelinecrm.com/people/{new_id}"
             # Step 2: update custom fields separately via PUT (more reliable than POST)
             if custom_fields:
-                MULTI_SELECT_FIELDS = {"custom_label_3322093", "custom_label_3759156", "custom_label_3740611", "custom_label_3052210"}
+                MULTI_SELECT_FIELDS = {"custom_label_3322093", "custom_label_3759156", "custom_label_3740611", "custom_label_3052210", "custom_label_3998063"}
                 formatted_cf = {}
                 for k, v in custom_fields.items():
                     if k in MULTI_SELECT_FIELDS and isinstance(v, list):
@@ -669,31 +669,31 @@ def _execute_tool_inner(tool_name, tool_input):
                 custom[k] = v
             else:
                 standard[k] = v
-        # For multi-select fields, fetch existing and merge — send as JSON arrays
-        MULTI_SELECT_FIELDS = {"custom_label_3322093", "custom_label_3759156", "custom_label_3740611", "custom_label_3052210"}
-        if custom:
+        # Multi-select fields merge with what's already on the record so we never
+        # clobber other selections. To DELETE a value, send custom_label_X__remove
+        # with the entry IDs to drop; the final set is (existing + added) minus removed.
+        MULTI_SELECT_FIELDS = {"custom_label_3322093", "custom_label_3759156", "custom_label_3740611", "custom_label_3052210", "custom_label_3998063"}
+        def _id_list(v):
+            if isinstance(v, list):
+                return [int(x) for x in v if str(x).strip().isdigit()]
+            if isinstance(v, int):
+                return [v]
+            if isinstance(v, str):
+                return [int(x) for x in v.replace("|", ",").split(",") if x.strip().isdigit()]
+            return []
+        # Pull out removal directives (custom_label_X__remove) before building the payload
+        removals = {}
+        for k in [k for k in custom if k.endswith("__remove")]:
+            removals[k[:-len("__remove")]] = custom.pop(k)
+        affected = {k for k in custom if k in MULTI_SELECT_FIELDS} | {b for b in removals if b in MULTI_SELECT_FIELDS}
+        if affected:
             existing = call_pipeline_api("GET", f"/people/{tool_input['person_id']}.json")
             if existing["status"] == 200:
                 existing_cf = existing["data"].get("custom_fields", {})
-                for k, v in list(custom.items()):
-                    if k not in MULTI_SELECT_FIELDS:
-                        continue
-                    if isinstance(v, list):
-                        new_ids = [int(x) for x in v if str(x).strip().isdigit()]
-                    elif isinstance(v, int):
-                        new_ids = [v]
-                    elif isinstance(v, str):
-                        new_ids = [int(x) for x in v.replace("|", ",").split(",") if x.strip().isdigit()]
-                    else:
-                        continue
-                    existing_vals = existing_cf.get(k, [])
-                    if isinstance(existing_vals, list):
-                        existing_ids = [int(x) for x in existing_vals if str(x).strip().isdigit()]
-                    elif existing_vals:
-                        existing_ids = [int(x) for x in str(existing_vals).replace("|", ",").split(",") if x.strip().isdigit()]
-                    else:
-                        existing_ids = []
-                    custom[k] = list(dict.fromkeys(existing_ids + new_ids))
+                for k in affected:
+                    remove_ids = set(_id_list(removals.get(k)))
+                    merged = _id_list(existing_cf.get(k)) + _id_list(custom.get(k))
+                    custom[k] = [i for i in dict.fromkeys(merged) if i not in remove_ids]
         payload = {"person": standard}
         if custom:
             payload["person"]["custom_fields"] = custom

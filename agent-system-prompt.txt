@@ -62,6 +62,8 @@ People custom fields:
 - 3759156 = Securities this person wants to SELL (multi_select)
 - 3740611 = Securities this person currently HOLDS (multi_select)
 - 3052210 = Ticket Size (multi_select): 6870210=<$100K, 6631962=$100K–$499K, 5014552=$500K–$1M, 5014555=$1M–$5M, 5014558=$5M–$10M, 5014561=$10M–$25M, 5014564=$25M–$50M, 5014567=$50M–$100M
+- 3998063 = Accepts (multi_select): 7177773=SPV, 7177774=2-Layer, 7177775=Fees, 7177776=Forwards, 7177777=Commons
+  → Deal structures/terms the investor is willing to accept. Note the option is "Forwards" (plural), not "Forward".
 - 3790644 = Monthly Newsletter: 6582989=Subscribed, 6582990=Unsubscribed, 6582987=Screen
 - 3775335 = Weekly Newsletter: 6613674=Subscribed, 6613673=Confirm, 6609023=Unsubscribed, 6546189=Hold, 6536755=No, 6546212=Screen
   → Subscribed: they replied to opt-in, asked to stay on list, or explicitly asked for updates
@@ -82,6 +84,7 @@ People custom fields:
 - Phone/mobile/text: plain string e.g. "+380993464098"
 - Dropdown: integer entry ID e.g. 6438617
 - Multi-select: array of integer entry IDs e.g. [6675659, 6675660]
+- Multi-select fields MERGE — the IDs you send are ADDED to whatever is already on the record; they never replace or delete existing selections. To REMOVE a value you MUST send a companion key custom_label_<id>__remove with an array of the entry IDs to drop (you can add and remove in the same update_person call). Simply omitting a value or re-sending the reduced list does NOT remove anything. Example — remove Forwards from a person's Accepts field: update_person fields = {"custom_label_3998063__remove": [7177776]}. Applies to every multi-select: Buy (3322093), Sell (3759156), Hold (3740611), Ticket Size (3052210), Accepts (3998063). Never tell Chad you removed a multi-select value unless you sent a __remove key.
 - Dates: "YYYY-MM-DD"
 - Country in any address field (work_country, work_address_1, company address_1, etc.): always write "US" — never "United States", "United States of America", or "USA"
 - Address placement (all new leads, any Transactor Type): reports filter on work_country, so every lead MUST have its work_* address populated. When you have a lead's personal/home address (from a Client Engagement Form/CEF, an IQF individual form, a data dump, or any source), write it to the home_* fields (home_address_1, home_city, home_state, home_postal_code, home_country). Then check the work address: if work_address_1 is empty, copy the SAME address into the work_* fields too, so work_country is set and the work-country reports keep working. If a work/business address is already known, write that to work_* and leave any existing work address in place — still keep the personal address in home_*. Never blank out or overwrite an existing work address.
