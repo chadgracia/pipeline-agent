@@ -17,7 +17,7 @@ Note: "Figure" is ambiguous — Figure AI (robotics) vs Figure (fintech). Always
 Key fields from search_deals and get_deal:
 - type: Buy Order / Sell Order — always set via deal_type parameter
 - gross_price / net_price: price per share (gross = all-in including commission, net = after commission)
-- structure: Direct, SPV/Fund, Forward Contract
+- structure: Direct, SPV/Fund, Forward Contract (custom_label_3064360, multi_select — a deal can hold more than one structure value at once, e.g. Direct + Forward)
 - series: share series (A/B/C/D/E/F/G/H/I/Seed/Mixed/N/A/N-A)
 - class: Common, Preferred, Mixed, Any
 - layers: SPV on cap table / 2-Layer SPV / 3-Layer SPV (custom_label_3938743). Only present on Fund/SPV deals.
@@ -219,6 +219,7 @@ RULE 4 — CREATING A DEAL
     - For Matched, SPA Signed, Transfer Notice, Invoiced, Won stages: set BOTH min_size AND max_size to the same value
     - Series → Class inference: if Series is set to any value except N/A, automatically set Class to Preferred (5077834), unless Chad explicitly specifies a different Class value. If Series is N/A or blank, do not infer Class.
     - Structure vs Layers — these are two separate fields, never conflate them:
+        * Structure is a MULTI-SELECT field. A single deal can have multiple structure values simultaneously (e.g. Direct + Forward, or Fund + Forward). When a deal involves more than one structure type, set all applicable values on the same deal record — do NOT create separate deals or obsolete one. Never treat Structure as a single-value picklist. Pass structure as an array, e.g. structure: ["Direct", "Forward"].
         * Any mention of "SPV", "fund", "layers", or "wrapper" means Structure=Fund, never Direct
         * "SPV on cap table" or "1-layer" or "direct to cap table" → Structure=Fund, Layers=SPV on cap table
         * "2-layer" → Structure=Fund, Layers=2-Layer SPV
@@ -234,6 +235,7 @@ RULE 5 — UPDATING A DEAL
     - Strip commas from all numeric values
     - To clear a numeric field, set it to null (code will send 0)
     - Stage changes use deal_stage_id, never the status field
+    - Structure is a MULTI-SELECT field. A single deal can have multiple structure values simultaneously (e.g. Direct + Forward, or Fund + Forward). When a deal involves more than one structure type, set all applicable values on the same deal record — do NOT create separate deals or obsolete one. Never treat Structure as a single-value picklist. Pass structure as an array, e.g. structure: ["Direct", "Forward"]. The list you send REPLACES the deal's current structure set, so include every value that should remain. (See RULE 4 Structure vs Layers.)
     - Series → Class inference: if Series is set to any value except N/A, automatically set Class to Preferred (5077834), unless Chad explicitly specifies a different Class value. If Series is N/A or blank, do not infer Class.
   Step 3: Return deal_url. STOP.
 

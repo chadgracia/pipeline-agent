@@ -419,7 +419,7 @@ TOOL_SPECS = [
                 "net": {"type": "number", "description": "Net price per share"},
                 "min_size": {"type": "number", "description": "Minimum deal size in dollars. 'Min ticket' refers to deal size — map a minimum ticket here."},
                 "max_size": {"type": "number", "description": "Maximum deal size in dollars. 'Ticket', 'ticket size', or 'max ticket' refer to deal size — map a maximum ticket here. A single ticket figure with no min/max qualifier (e.g. 'ticket of $5M') is the maximum."},
-                "structure": {"type": "string", "enum": ["Direct", "Fund", "Forward"], "description": "Deal structure"},
+                "structure": {"type": "array", "items": {"type": "string", "enum": ["Direct", "Fund", "Forward"]}, "description": "Deal structure(s) — multi-select; pass every value that applies, e.g. [\"Direct\", \"Forward\"]"},
                 "series": {"type": "string", "description": "Series e.g. A, B, C, D, E, F, Seed, N/A"},
                 "class": {"type": "string", "enum": ["Common", "Preferred", "Mixed", "Any"], "description": "Share class"},
                 "nexus": {"type": "string", "enum": ["Direct", "RMS Broker", "Co-Broker", "Foreign Finder"], "description": "How the deal came in"},
@@ -474,7 +474,10 @@ def _format_deal(d):
 
     STRUCTURE_MAP = {6250090: "Direct", 5077906: "Fund/SPV", 5077903: "Forward Contract"}
     raw_structure = cf.get("custom_label_3064360")
-    structure = STRUCTURE_MAP.get(raw_structure[0] if isinstance(raw_structure, list) else raw_structure)
+    if isinstance(raw_structure, list):
+        structure = " + ".join(STRUCTURE_MAP[s] for s in raw_structure if s in STRUCTURE_MAP) or None
+    else:
+        structure = STRUCTURE_MAP.get(raw_structure)
 
     CLASS_MAP = {5077831: "Common", 5077834: "Preferred", 5077912: "Mixed", 5077915: "Any"}
     deal_class = CLASS_MAP.get(cf.get("custom_label_3064330"))
@@ -1265,8 +1268,11 @@ def _execute_tool_inner(tool_name, tool_input):
             custom_fields["custom_label_3065488"] = float(tool_input["min_size"])
         if tool_input.get("max_size"):
             custom_fields["custom_label_3064645"] = float(tool_input["max_size"])
-        if tool_input.get("structure") in structure_map:
-            custom_fields["custom_label_3064360"] = [structure_map[tool_input["structure"]]]
+        raw_structure = tool_input.get("structure")
+        struct_vals = raw_structure if isinstance(raw_structure, list) else ([raw_structure] if raw_structure else [])
+        struct_ids = [structure_map[s] for s in struct_vals if s in structure_map]
+        if struct_ids:
+            custom_fields["custom_label_3064360"] = struct_ids
         if tool_input.get("series") in series_map:
             custom_fields["custom_label_3064333"] = series_map[tool_input["series"]]
         if tool_input.get("class") in class_map:
@@ -1362,12 +1368,22 @@ def _execute_tool_inner(tool_name, tool_input):
                 else:
                     custom[DEAL_FIELD_MAP[k]] = float(v)
             elif k in DEAL_ENUM_MAP:
-                mapped = DEAL_ENUM_MAP[k].get(str(v)) or DEAL_ENUM_MAP[k].get(str(v).lower()) or {i.lower(): j for i, j in DEAL_ENUM_MAP[k].items()}.get(str(v).lower())
-                if mapped:
-                    label = {"deal_type": "custom_label_1958", "structure": "custom_label_3064360",
-                             "class": "custom_label_3064330", "nexus": "custom_label_3751449",
-                             "series": "custom_label_3064333", "layers": "custom_label_3938743"}[k]
-                    custom[label] = [mapped] if k in ("deal_type", "structure") else mapped
+                label = {"deal_type": "custom_label_1958", "structure": "custom_label_3064360",
+                         "class": "custom_label_3064330", "nexus": "custom_label_3751449",
+                         "series": "custom_label_3064333", "layers": "custom_label_3938743"}[k]
+                def _map_enum(val):
+                    return (DEAL_ENUM_MAP[k].get(str(val)) or DEAL_ENUM_MAP[k].get(str(val).lower())
+                            or {i.lower(): j for i, j in DEAL_ENUM_MAP[k].items()}.get(str(val).lower()))
+                if k == "structure":
+                    # multi-select: the full list sent replaces the deal's structure set
+                    vals = v if isinstance(v, list) else [v]
+                    ids = [m for m in (_map_enum(x) for x in vals) if m]
+                    if ids:
+                        custom[label] = ids
+                else:
+                    mapped = _map_enum(v)
+                    if mapped:
+                        custom[label] = [mapped] if k == "deal_type" else mapped
             else:
                 standard[k] = v
         # Track which fields were intentionally cleared (set to None -> 0)
