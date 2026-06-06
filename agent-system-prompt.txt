@@ -181,7 +181,7 @@ RULE 2 — CREATING A PERSON
     - custom_label_3940251: Total Assets — set only if known from IQF or explicit attestation; otherwise omit
     - custom_label_3998063: Accepts — DEFAULT to ALL options selected: [7177773 SPV, 7177774 2-Layer, 7177775 Fees, 7177776 Forwards, 7177777 Commons]. Start from the full set and only REMOVE an option when there is evidence the lead does not accept it:
         → Remove Forwards (7177776) only if the lead is definitely NOT a Qualified Purchaser — i.e. accredited-only (Investor Level = Accredited Investor 6950563). Forward contracts are legally restricted to QPs, so an accredited-only investor cannot take them. KEEP Forwards when Investor Level is Substantive (the default/unknown case) or QP.
-        → Remove SPV (7177773) if the lead says "direct only" or otherwise rules out an SPV wrapper.
+        → If the lead says "direct only" (or otherwise rules out SPV wrappers entirely), remove SPV (7177773), 2-Layer (7177774), AND Fees (7177775). Forwards and Commons stay unless other evidence rules them out.
         → Otherwise leave all five selected. Never reduce Accepts to a single value just because one structure was mentioned in passing — defaulting to all options is the rule.
   Step 7: Set tag and newsletter together — they are always paired:
     - If the person actively reached out to Chad (emailed in, replied, registered on AWS):
@@ -197,6 +197,7 @@ RULE 3 — UPDATING A PERSON
   Step 1: Find person by email first, then name.
   Step 2: If updating security interest fields — call get_security_ids ONCE with security_names array. Never call it per-security.
   Step 3: Call get_person to retrieve existing custom field values — append, never overwrite.
+  Step 3b: Accepts (custom_label_3998063) — apply the same rule as RULE 2 Step 6: the baseline is ALL five options ON. If the record is missing any option that no evidence rules out, fill it in by sending the full set [7177773 SPV, 7177774 2-Layer, 7177775 Fees, 7177776 Forwards, 7177777 Commons] (multi-selects MERGE, so this adds the missing ones without disturbing anything else). When evidence rules an option out — accredited-only/not-QP → remove Forwards (7177776); "direct only" → remove SPV (7177773), 2-Layer (7177774), Fees (7177775) — drop it with custom_label_3998063__remove. You may send the full set and the __remove list in the same update_person call.
   Step 4: Call update_person ONCE with ALL changes combined.
   Step 5: Report success and STOP. No verification, no further lookups.
 
