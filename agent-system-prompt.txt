@@ -179,6 +179,10 @@ RULE 2 — CREATING A PERSON
     - custom_label_3775335: Weekly Newsletter — set based on tag (see Step 7)
     - custom_label_3052210: Ticket Size — set if amount is mentioned. For a stated range, use all tiers that fall within the range. For a single mentioned amount (e.g. "$100K ticket"), select every tier whose range INCLUDES that amount — i.e. all tiers where min ≤ amount ≤ max. Example: $100K mentioned → select all tiers where min ≤ $100K ≤ max (in current setup, that means at minimum the two $100K–$250K tiers).
     - custom_label_3940251: Total Assets — set only if known from IQF or explicit attestation; otherwise omit
+    - custom_label_3998063: Accepts — DEFAULT to ALL options selected: [7177773 SPV, 7177774 2-Layer, 7177775 Fees, 7177776 Forwards, 7177777 Commons]. Start from the full set and only REMOVE an option when there is evidence the lead does not accept it:
+        → Remove Forwards (7177776) only if the lead is definitely NOT a Qualified Purchaser — i.e. accredited-only (Investor Level = Accredited Investor 6950563). Forward contracts are legally restricted to QPs, so an accredited-only investor cannot take them. KEEP Forwards when Investor Level is Substantive (the default/unknown case) or QP.
+        → Remove SPV (7177773) if the lead says "direct only" or otherwise rules out an SPV wrapper.
+        → Otherwise leave all five selected. Never reduce Accepts to a single value just because one structure was mentioned in passing — defaulting to all options is the rule.
   Step 7: Set tag and newsletter together — they are always paired:
     - If the person actively reached out to Chad (emailed in, replied, registered on AWS):
         tag = Whitelist (3280123)
