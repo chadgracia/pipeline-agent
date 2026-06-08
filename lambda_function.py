@@ -643,9 +643,24 @@ def _execute_tool_inner(tool_name, tool_input):
                 person_data[field] = value
             elif field.startswith("custom_label_"):
                 custom_fields[field] = value
-        # Always set type to Lead and add Whitelist tag
-        person_data["type"] = "Lead"
-        person_data["predefined_contacts_tag_ids"] = [3280123]
+        # Detect support-staff titles (EA, assistant, secretary, etc.) → mark as Contact instead of Lead
+        SUPPORT_TITLE_PATTERNS = [
+            r"\bexecutive\s+assistant\b", r"\bexec\.?\s+assistant\b", r"\bexecutive\s+asst\b",
+            r"\bpersonal\s+assistant\b", r"\badmin(?:istrative)?\s+assistant\b",
+            r"\bassistant\s+to\b", r"\bassistant\b", r"\basst\b",
+            r"\bsecretary\b", r"\breceptionist\b", r"\bscheduler\b",
+            r"\boffice\s+(?:manager|admin(?:istrator)?)\b", r"\badministrator\b",
+            r"\bsupport\s+staff\b", r"\bea\b", r"\bpa\b",
+        ]
+        position_raw = (person_data.get("position") or "").strip()
+        position_lc = position_raw.lower()
+        is_support = bool(position_lc) and any(re.search(p, position_lc) for p in SUPPORT_TITLE_PATTERNS)
+
+        if is_support:
+            person_data["type"] = "Contact"
+        else:
+            person_data["type"] = "Lead"
+            person_data["predefined_contacts_tag_ids"] = [3280123]
         result = call_pipeline_api("POST", "/people.json", {"person": person_data})
         if result["status"] == 200:
             new_id = result["data"].get("id")
@@ -660,7 +675,14 @@ def _execute_tool_inner(tool_name, tool_input):
                     else:
                         formatted_cf[k] = v
                 call_pipeline_api("PUT", f"/people/{new_id}.json", {"person": {"custom_fields": formatted_cf}})
-            return {"success": True, "person_id": new_id, "pipeline_url": pipeline_url, "message": f"Created. Reply must include the pipeline_url so Chad can verify."}
+            if is_support:
+                note = (f"NOTE: Title '{position_raw}' looks like support staff, so this person was created "
+                        f"as a Contact (not a Lead) and the Whitelist tag was not applied. "
+                        f"Include this note in your reply to Chad so he can override if needed.")
+                return {"success": True, "person_id": new_id, "pipeline_url": pipeline_url,
+                        "person_type": "Contact", "support_staff_detected": True,
+                        "message": f"Created as Contact. {note} Reply must include the pipeline_url so Chad can verify."}
+            return {"success": True, "person_id": new_id, "pipeline_url": pipeline_url, "person_type": "Lead", "message": f"Created. Reply must include the pipeline_url so Chad can verify."}
         return {"success": False, "status": result["status"], "error": result["data"]}
 
     elif tool_name == "update_person":
