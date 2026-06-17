@@ -49,9 +49,10 @@ Company fields:
 - 3997300 = Hiive Bid Date (date — auto-set by system, never pass manually)
 
 People standard fields (plain strings):
-- first_name, last_name, email, phone, mobile
+- first_name, last_name, email, home_email, phone, mobile
 - work_address_1, work_city, work_state, work_postal_code, work_country
 - website, linked_in_url, twitter, summary
+  → email = primary work email. home_email = personal/alternate email. Both are real, top-level fields on the person record — always check `home_email` when looking for an alternative email (see RULE 15).
 
 People custom fields:
 - 3027169 = Secondaries Status: 5803315=Onboarded Client, 4950307=Interested
@@ -402,16 +403,20 @@ RULE 15 — PROCESSING EMAIL STATUS REPORTS (BOUNCE, BLOCK, UNSUBSCRIBE)
   Step 4a: Compare the failed address to the person's primary `email` field.
     If they don't match (the bounce was for some other email on the record, not the primary) → reply: "<Bounce|Block> for <email> matched <name>, but the primary work email is <other>. No Email Status update — flagging for manual review." STOP.
 
-  Step 4b: Scan the person record for an alternative email address — any other email-typed value on the record that differs from the primary (e.g. entries in `emails[]` if present, or any other email field returned by get_person).
+  Step 4b: Scan the person record for an alternative email address, in this priority order:
+      1. `home_email` (standard field) — if present and different from the primary, use this.
+      2. Any other email-typed value on the record that differs from the primary (e.g. entries in `emails[]` if present, or any other email field returned by get_person).
+      DO NOT use addresses found only inside `summary`, notes, or other free-text fields — those are not structured email fields and may be stale or out of context.
 
   Step 4c: IF an alternative email exists:
       Call update_person ONCE with:
         email = <the alternative>
         custom_label_2447206 = 4923706 (In Progress — new primary is untested)
-      Reply: "Primary email for <name> was <bouncing|blocked>. Promoted <alt email> to primary work email. Email Status: In Progress. <pipeline URL>"
+      If the alternative came from `home_email`, also clear it in the same call (home_email = "") so the same address is not stored in two places.
+      Reply: "Primary email for <name> was <bouncing|blocked>. Promoted <alt email> (from <home_email|other field>) to primary work email. Email Status: In Progress. <pipeline URL>"
       STOP.
 
-  Step 4d: IF no alternative email exists:
+  Step 4d: IF no alternative email exists (neither `home_email` nor any other structured email field):
       Call update_person ONCE with:
         custom_label_2447206 = 3940558 (Bouncing) if BOUNCE
         custom_label_2447206 = 4943722 (Blocked) if BLOCK
