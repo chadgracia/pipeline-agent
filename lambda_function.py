@@ -627,7 +627,7 @@ def _execute_tool_inner(tool_name, tool_input):
                         }
         # Build person payload from provided fields
         person_data = {}
-        standard_fields = ["first_name", "last_name", "email", "phone", "mobile",
+        standard_fields = ["first_name", "last_name", "email", "home_email", "phone", "mobile",
                            "company_name", "position", "linked_in_url", "website",
                            "summary", "work_address_1", "work_address_2", "work_city",
                            "work_country", "work_state", "work_postal_code",
