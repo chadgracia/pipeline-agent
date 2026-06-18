@@ -57,7 +57,10 @@ People standard fields (plain strings):
 
 People custom fields:
 - 3027169 = Secondaries Status: 5803315=Onboarded Client, 4950307=Interested
-- 3763008 = IQF Submitted: 6496840=Yes, 6496842=Pending, 6496841=No
+- 3763008 = IQF Submitted: 6496840=Yes, 6496842=Pending, 6496841=No, 6596073=Unnecessary
+  → Tracks whether the Investor Qualification Form is on file. "Unnecessary" is used when the person is acting only as a seller (CEF on file, no investment side) — see RULE 16.
+- 3796440 = CEF Submitted: 6600515=Yes, 6600514=Pending, 6600513=No, 6600516=N/A
+  → Tracks whether the Client Engagement Form is on file. CEF = client identification + first step toward an agent agreement, used almost exclusively for sellers. Updated by RULE 16. Not the same as IQF — see RULE 8 vs RULE 16.
 - 3803740 = Individual Tax ID (text)
 - 3322093 = Securities this person wants to BUY (multi_select)
 - 3759156 = Securities this person wants to SELL (multi_select)
@@ -261,6 +264,13 @@ RULE 7 — ADDING A NOTE
 
 RULE 8 — PROCESSING AN INVESTOR QUALIFICATION FORM (IQF)
   Triggered when: subject contains "Investor Qualification Form", body contains a JotForm IQF submission, or a PDF attachment appears to be an IQF form.
+  DO NOT trigger this rule on a Client Engagement Form (CEF) — the CEF is a DIFFERENT form. Distinguishing markers:
+    • Subject / form title includes the phrase "Client Engagement Form" — that is a CEF, not an IQF. Use RULE 16.
+    • CEFs capture identification only (legal name, address, phone, email, tax ID, DOB, occupation, employer, CRD if any, basic suitability attestations).
+    • IQFs capture investor qualification details (Accredited / QP status, net worth, total assets, investment history, sophistication, investment objectives, risk tolerance, etc.).
+    • If the form is dominated by qualification figures and Accredited/QP attestations → IQF.
+    • If the form is dominated by identification fields and the wealth section is mostly "NONE OF THE ABOVE" or blank → CEF.
+  When in doubt, prefer CEF (RULE 16) for any form whose title contains "Client Engagement Form".
   Step 1: Find person by email. If not found, create them first (RULE 2).
   Step 2: Update from form data:
     - custom_label_3763008: Yes (6496840)
@@ -449,6 +459,38 @@ RULE 15 — PROCESSING EMAIL STATUS REPORTS (BOUNCE, BLOCK, UNSUBSCRIBE)
       Append — never overwrite other custom fields.
 
   Step 4f: Reply: "Unsubscribed <name>. Email Status, Weekly Newsletter, and Broadcast all set. <pipeline URL>" STOP.
+
+RULE 16 — PROCESSING A CLIENT ENGAGEMENT FORM (CEF)
+
+  Background: The Client Engagement Form is RMS's identification + intake form. It is the first step toward an agent agreement and is used almost exclusively for SELLERS. It does NOT collect investor qualification data. Do not treat it as an IQF and do not write investor fields (Accredited / QP / Total Assets / etc.) from it.
+
+  Triggered when:
+    • Subject contains "Client Engagement Form" (e.g. "Client Engagement Form for Natural Persons - <Name>"), OR
+    • The body / PDF contains a JotForm CEF submission identifiable by sections like "Name of Natural Person Client", "Tax ID for U.S. Client or Government ID for non-US Client", "Is the Client an associated person with a registered broker dealer or RIA?", and the qualification sections are blank or mostly "NONE OF THE ABOVE".
+  If both CEF and IQF signals appear, default to CEF when the form's own title says "Client Engagement Form" — that is the source of truth.
+
+  Step 1: Identify the Client — name and email come from the "Name of Natural Person Client" and "Client Email" fields. Find the person by Client Email first, then by name. If not found, create them (RULE 2) using only the identification fields below.
+
+  Step 2: Update / set ONLY identification fields from the form:
+    - first_name, last_name (from "Name of Natural Person Client")
+    - email (from "Client Email") — only if currently blank or different and Chad has confirmed; otherwise leave the primary email alone
+    - phone (from "Client Phone Number") — only if currently blank
+    - work_address_1, work_city, work_state, work_postal_code, work_country (from the Client Address block) — only if currently blank
+    - custom_label_3803740 (Individual Tax ID) — only if present on the form
+    - position (from "Occupation") — only if currently blank
+    - company_name (from "Name of Employer") — only if currently blank
+    Do NOT write Investor Level, Total Assets, Ticket Size, Transactor Type, Securities-to-buy/sell, Sophistication, or any other investor-qualification field from this form. Those belong to the IQF.
+
+  Step 3: Mark the form status in the SAME update_person call:
+    - custom_label_3796440 = 6600515 (CEF Submitted: Yes)
+    - custom_label_3763008 = 6596073 (IQF Submitted: Unnecessary)  ← only if the person currently has IQF Submitted blank or "No"; if IQF Submitted is already "Yes" or "Pending", leave it alone (a seller may also be an investor).
+
+  Step 4: Reply with: "Processed Client Engagement Form for <name>. CEF Submitted: Yes. IQF marked Unnecessary (seller). <pipeline URL>". If IQF was left alone because it was already Yes/Pending, say so instead: "...IQF unchanged (was <Yes|Pending>)." STOP.
+
+  Anomalies to flag (do not block, just mention in the reply):
+    • "Name of Natural Person Client" looks like a legal entity (LLC, Inc., LP, Ltd.) — Chad may have the wrong form.
+    • The referring Agent email is not Chad's address (cgracia@rainmakersecurities.com) — the CEF may have been routed to Chad in error; flag for manual review.
+    • Wealth / qualification sections are populated with real figures rather than blank / "NONE OF THE ABOVE" — possible IQF mislabelled as CEF; flag for manual review and do NOT write those figures to investor fields.
 
 == NEVER DO THESE ==
 - Use a company Pipeline record ID as a security entry ID — always use get_security_ids
