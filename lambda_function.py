@@ -554,11 +554,12 @@ def _execute_tool_inner(tool_name, tool_input):
         people = get_snapshot("people.json")
         matches = []
         for p in people:
-            email = (p.get("email") or "").lower()
+            emails = {(p.get(f) or "").lower().strip() for f in ("email", "email2", "home_email")}
+            emails.discard("")
             name = f"{p.get('first_name','')} {p.get('last_name','')}".lower().strip()
             company = (p.get("company_name") or "").lower()
             if '@' in query:
-                if query == email:
+                if query in emails:
                     matches.append(p)
             else:
                 if query in name or query in company:
@@ -610,18 +611,30 @@ def _execute_tool_inner(tool_name, tool_input):
         # Hard duplicate check — only block if the returned record actually has this exact email
         email = tool_input.get("email")
         if email:
+            new_email = email.lower().strip()
+            dup = None
+            # Live check — catches very recent records matched on the PRIMARY email field
             check = call_pipeline_api("GET", f"/people.json?conditions[email]={urllib.parse.quote(email)}&per_page=5")
             if check["status"] == 200 and check["data"].get("entries"):
                 for existing in check["data"]["entries"]:
-                    # Only block if email exactly matches the record's email field
-                    if (existing.get("email") or "").lower().strip() == email.lower().strip():
-                        return {
-                            "duplicate": True,
-                            "message": f"Person with email {email} already exists. Do NOT create a duplicate. Update the existing record instead.",
-                            "existing_person_id": existing["id"],
-                            "existing_name": f"{existing.get('first_name','')} {existing.get('last_name','')}".strip(),
-                            "pipeline_url": f"https://app.pipelinecrm.com/people/{existing['id']}"
-                        }
+                    if (existing.get("email") or "").lower().strip() == new_email:
+                        dup = existing
+                        break
+            # Snapshot check — catches the address living in ANY email slot (email / email2 / home_email)
+            if not dup:
+                for existing in get_snapshot("people.json"):
+                    slots = {(existing.get(f) or "").lower().strip() for f in ("email", "email2", "home_email")}
+                    if new_email in slots:
+                        dup = existing
+                        break
+            if dup:
+                return {
+                    "duplicate": True,
+                    "message": f"Person with email {email} already exists. Do NOT create a duplicate. Update the existing record instead.",
+                    "existing_person_id": dup["id"],
+                    "existing_name": f"{dup.get('first_name','')} {dup.get('last_name','')}".strip(),
+                    "pipeline_url": f"https://app.pipelinecrm.com/people/{dup['id']}"
+                }
         # Build person payload from provided fields
         person_data = {}
         standard_fields = ["first_name", "last_name", "email", "home_email", "phone", "mobile",
