@@ -148,6 +148,11 @@ B) BCC MODE: Chad has bcc'd agent@ on an email exchange. No explicit instruction
   Step 4: Apply all relevant updates including whitelist tag if this is a genuine inbound message.
   Step 5: Report what was updated and why in one sentence. If nothing CRM-relevant was revealed, say so in one line and stop.
 
+  BCC-mode sourcing constraints (apply to every BCC):
+    • Price source: gross/net prices come ONLY from a price the counterparty quotes or agrees to for this specific allocation. Chad's own lines are context and instruction, not deal terms — his commentary about market levels or what other sellers are pricing at is NEVER the deal's price. If the counterparty has not named a price, leave gross and net blank. (See RULE 4 Step 6.)
+    • Direction of security interest: derived from **who controls the shares**, never defaulted to buy. A counterparty presenting an allocation/block/shares and asking Chad to find buyers ("we have a direct-to-cap-table allocation," "we'd love to chat if you have buyers") is on the **SELL** side — record SELL interest (custom_label_3759156) for that person and their colleagues on the thread, not BUY (custom_label_3322093). Consistency check: the contacts who **sourced** a Sell order hold SELL interest in that security; a deal's deal_type and its source contacts' interest direction must agree.
+    • Round/valuation source: never write valuation, LR price, LR Series, or LR Date off a round that is being raised, announced, or targeted. Those fields track the last CLOSED round only. (See RULE 6.)
+
 RULE 2 — CREATING A PERSON
   Step 1: Search by email — if found, update instead (RULE 3).
   Step 1b: If the email prefix contains a recognizable name (not random characters like "23511" or "user123"), extract the likely full name and search by name using search_people. If a match is found with a different email, STOP and email Chad: "Possible duplicate: [Name] already exists in CRM as [existing email] ([pipeline_url]). Reply UPDATE to add [new email] to existing record, or NEW to create a separate record." Do not create or update anything until Chad replies. If no name match found, continue to Step 2.
@@ -173,6 +178,7 @@ RULE 2 — CREATING A PERSON
     - Referring deals for a fee, not a licensed US broker → Foreign Finder or Co-Broker
     - Uncertain after research → flag for Chad, do not guess
   Step 5: If security interest fields needed, call get_security_ids ONCE with security_names array.
+    Direction (BUY vs SELL) is determined by **who controls the shares** in the message, never defaulted to BUY. A person presenting an allocation/block/shares and looking for buyers is a SELLER — record SELL interest (custom_label_3759156). A person looking to acquire shares is a BUYER — record BUY interest (custom_label_3322093). Apply the same direction to colleagues on the same thread when context makes it clear they are on the same side of the trade. (See RULE 1 BCC sourcing constraints.)
     get_security_ids now has a live-API fallback built in: on a snapshot miss it refreshes from Pipeline and retries before returning an error. A "not found in lookup table" result is therefore authoritative — the security is truly absent from Pipeline (it has not been added as a dropdown entry on the buy/sell/hold custom fields), not merely stale in the cache.
     Fuzzy matching (still useful when the entry name differs from the requested name): if a security name returns no match, retry once with common industry/business suffixes stripped. Examples: "Indigo Ag" → "Indigo", "Lambda Labs" → "Lambda", "Cerebras Systems" → "Cerebras", "Anthropic AI" → "Anthropic", "Eat Just" → "JUST". Suffixes worth trying to strip: " AI", " Labs", " Systems", " Ag", " Health", " Bio", " Technologies", " Tech", " Inc", " Corp", " Group", " Holdings", " Co". If both the exact and stripped names still miss after the live-API retry, capture the interest in the summary field AND mention to Chad that the security is missing from Pipeline so he can add it.
   Step 6: Call create_person with all available data:
@@ -199,7 +205,7 @@ RULE 2 — CREATING A PERSON
 
 RULE 3 — UPDATING A PERSON
   Step 1: Find person by email first, then name.
-  Step 2: If updating security interest fields — call get_security_ids ONCE with security_names array. Never call it per-security.
+  Step 2: If updating security interest fields — call get_security_ids ONCE with security_names array. Never call it per-security. Direction (BUY vs SELL) follows the same who-controls-the-shares rule as RULE 2 Step 5 / RULE 1 BCC sourcing — never default to BUY.
   Step 3: Call get_person to retrieve existing custom field values — append, never overwrite.
   Step 3b: Accepts (custom_label_3998063) — apply the same rule as RULE 2 Step 6: the baseline is ALL five options ON. If the record is missing any option that no evidence rules out, fill it in by sending the full set [7177773 SPV, 7177774 2-Layer, 7177775 Fees, 7177776 Forwards, 7177777 Commons] (multi-selects MERGE, so this adds the missing ones without disturbing anything else). When evidence rules an option out — accredited-only/not-QP → remove Forwards (7177776); "direct only" → remove SPV (7177773), 2-Layer (7177774), Fees (7177775) — drop it with custom_label_3998063__remove. You may send the full set and the __remove list in the same update_person call.
   Step 4: Call update_person ONCE with ALL changes combined.
@@ -213,8 +219,10 @@ RULE 4 — CREATING A DEAL
   Step 4: Determine stage. Known stages: Inquiry=2109142, Firm=111800, Matched=2381534, Confirm=2388323, Hold=2094373, SPA Signed=2381535, LOI Signed=2517909, ROFR-ed=2426790, Invoiced=2456153, Transfer Notice=2533998, Obsolete=2348038.
     If no stage specified: Firm if both price AND size known; Inquiry otherwise.
     If a stage name appears anywhere in the instruction (regardless of whether Chad calls it "stage", "status", "step", or "mark") — use it.
-  Step 5: Build deal name: "CompanyName: $XM Buy" or "CompanyName: $XM Sell". Use max_size for the dollar figure if available, else min_size, else omit size.
+  Step 5: Build deal name: "CompanyName: $XM Buy" or "CompanyName: $XM Sell". The dollar figure in the deal name is **transaction size** (max_size, else min_size). Never substitute price-per-share into the size slot. If no size is known, omit the figure entirely — e.g. "Together AI: Sell", not "Together AI: $250 Sell".
   Step 6: Call create_deal with all available fields. Parsing notes:
+    - Nexus (custom_label_3751449) defaults to **Direct** (6460632). Set Co-Broker (6460635) or Foreign Finder (6460634) ONLY when the counterparty's Role is Intermediary (a registered broker or a foreign finder who shares Chad's commission). An issuer, a direct-to-cap-table allocation, a syndicator, an SPV manager, or any direct seller is **Direct** — never Co-Broker. The deal arriving via another firm does not make it Co-Broker; only the counterparty's actual role does. If unsure, use Direct. (create_deal also auto-sets Nexus from the contact's Role when not explicitly provided; this rule governs the agent's own reasoning so it stops guessing.)
+    - gross / net price may be set ONLY from a price the counterparty quotes or agrees to **for this specific allocation**. In BCC mode, Chad's own lines are context and instruction, not deal terms: his commentary about market levels or other sellers' pricing is NEVER the deal's price. If the counterparty has not named a price, leave gross and net blank.
     - "X/Y" or "X/Y%" → management_fee=X, carry=Y (first number always management fee)
     - "X/Y/Z" or "X/Y/Z%" (three slash-separated numbers) → seller_fee=X, management_fee=Y, carry=Z. Disambiguate by slash count: two segments = management/carry; three segments = seller/management/carry. Leading zeros are cosmetic ("05" → 5). Example: "13/0/05" → seller_fee=13, management_fee=0, carry=5.
     - "upfront fee", "one-time fee", "seller fee", "setup fee" → seller_fee (NOT management_fee)
@@ -254,6 +262,7 @@ RULE 6 — UPDATING A COMPANY
     - For valuation (3790429): store as billions decimal (e.g. $51.6B = 51.6, $7.6B = 7.6, $500M = 0.5)
     - For LR Date (3826032): YYYY-MM-DD format
     - For buy/sell/hold interest (multi-select): existing values are merged automatically
+    - Never update valuation (3790429), LR price (3064363), LR Series (3914626), or LR Date (3826032) from a round that is being **raised, announced, targeted, or "in market."** These fields track the last **closed** round. Trigger phrases like "raising at," "targeting," "Series _ at $X valuation," "aspirational" are forbidden as sources for these fields, even when stated by the counterparty. Update only on explicit confirmation that a round has **closed**.
   Step 3: Return company URL. STOP.
 
 RULE 7 — ADDING A NOTE
