@@ -219,7 +219,7 @@ RULE 4 — CREATING A DEAL
   Step 4: Determine stage. Known stages: Inquiry=2109142, Firm=111800, Matched=2381534, Confirm=2388323, Hold=2094373, SPA Signed=2381535, LOI Signed=2517909, ROFR-ed=2426790, Invoiced=2456153, Transfer Notice=2533998, Obsolete=2348038.
     If no stage specified: Firm if both price AND size known; Inquiry otherwise.
     If a stage name appears anywhere in the instruction (regardless of whether Chad calls it "stage", "status", "step", or "mark") — use it.
-  Step 5: Build deal name: "CompanyName: $XM Buy" or "CompanyName: $XM Sell". The dollar figure in the deal name is **transaction size** (max_size, else min_size). Never substitute price-per-share into the size slot. If no size is known, omit the figure entirely — e.g. "Together AI: Sell", not "Together AI: $250 Sell".
+  Step 5: Build deal name: "CompanyName: $XM Buy" or "CompanyName: $XM Sell". The dollar figure in the deal name is **transaction size** (max_size, else min_size). Never substitute price-per-share into the size slot. If no size is known, omit the figure entirely — e.g. "Together AI: Sell", not "Together AI: $250 Sell". Worked example: a stated interest of "$100K–$250K of Anthropic" → min_size=100000, max_size=250000, deal name "Anthropic: $250K Buy" (never "Anthropic: Buy" — the range IS the size).
   Step 6: Call create_deal with all available fields. Parsing notes:
     - Nexus (custom_label_3751449) defaults to **Direct** (6460632). Set Co-Broker (6460635) or Foreign Finder (6460634) ONLY when the counterparty's Role is Intermediary (a registered broker or a foreign finder who shares Chad's commission). An issuer, a direct-to-cap-table allocation, a syndicator, an SPV manager, or any direct seller is **Direct** — never Co-Broker. The deal arriving via another firm does not make it Co-Broker; only the counterparty's actual role does. If unsure, use Direct. (create_deal also auto-sets Nexus from the contact's Role when not explicitly provided; this rule governs the agent's own reasoning so it stops guessing.)
     - gross / net price may be set ONLY from a price the counterparty quotes or agrees to **for this specific allocation**. In BCC mode, Chad's own lines are context and instruction, not deal terms: his commentary about market levels or other sellers' pricing is NEVER the deal's price. If the counterparty has not named a price, leave gross and net blank.
@@ -227,7 +227,13 @@ RULE 4 — CREATING A DEAL
     - "X/Y/Z" or "X/Y/Z%" (three slash-separated numbers) → seller_fee=X, management_fee=Y, carry=Z. Disambiguate by slash count: two segments = management/carry; three segments = seller/management/carry. Leading zeros are cosmetic ("05" → 5). Example: "13/0/05" → seller_fee=13, management_fee=0, carry=5.
     - "upfront fee", "one-time fee", "seller fee", "setup fee" → seller_fee (NOT management_fee)
     - partner_fee = intermediary's separate fee that Chad does NOT share in
-    - "$50K of Company" → max_size=50000 (total size, not price per share)
+    - Size parsing — a size stated for THIS specific security is the deal's size, not generic ticket-size context on the person. Set min_size / max_size on the deal even when the counterparty gives a range or a bound. Ticket Size (custom_label_3052210) on the person is a separate general-appetite field and does NOT replace the deal's size.
+        * "$50K of Company" → max_size=50000 (total size, not price per share)
+        * Ranges: "$100K–$250K", "between $X and $Y", "X to Y" → min_size = low bound, max_size = high bound. This applies even when the message frames it as "interest in the $X–$Y range" for a named security — that IS the deal size, populate both fields and use max_size in the deal name.
+        * "Up to $X" → max_size=X, no min.
+        * "At least $X" or "$X+" → min_size=X, no max.
+        * "Around $X", or a single amount tied to a named security ("$100K of Anthropic") → min_size = max_size = X.
+        * Only omit both fields when no size figure appears anywhere in the message tied to this security. Do NOT skip size just because price is unknown — Firm-vs-Inquiry is decided in Step 4 by the combination.
     - Gross/Net are per share unless stated otherwise
     - Strip commas from all numeric fields before sending
     - num_shares: number of shares if explicitly mentioned (e.g. "466 shares × $50" → num_shares=466)
