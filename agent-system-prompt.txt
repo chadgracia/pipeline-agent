@@ -543,19 +543,44 @@ RULE 17 — PARSING A PITCHBOOK COMPANY PROFILE
   Every appearance of an entity (across rounds AND across the contact table
   and the summary table) updates the SAME map entry.
 
-  Step 4: Emit EXACTLY ONE row per map entry.
+  Step 4: MAP-FIRST, EMIT-SECOND. Finish reading every source table (all
+  deal-level "Investors (N)" tables, all report-level summary tables, the
+  Lead Partners contact table) and finish updating the map BEFORE you
+  write the first output row. Never emit incrementally — that is the
+  single largest source of the "same firm twice" bug.
+
+  Then, for each map entry, produce EXACTLY ONE row:
     • Contact: if the "Lead Partners on Deals — Investors" table names a
       person representing that entity, fill Name/Title/Email from it
       and keep the firm in the Company column. Use only values printed in
-      the PDF (RULE 0) — never infer an email from a name or domain.
+      the PDF (RULE 0) — never infer an email from a name or domain. If
+      multiple partners represent the same firm, pick the one with an
+      email; ties broken by the first listed.
     • If no named contact exists, Name/Title/Email = "—" and the firm
       goes in the Company column.
-    • CRITICAL: a firm that has a named partner appears ONCE, as the contact
-      row. Do NOT also emit a blank-contact row for that same firm. If your
-      draft table contains both "<Person> | … | <Firm>" and "<Firm> | — |
-      … | <Firm>", the second is a duplicate — delete it.
     Exclude the profiled company's own management and board members (e.g. a
     contact with an @<profiled-company> email) — they are not investors.
+
+  Step 4b: PRE-SEND DEDUPE PASS — the anti-duplicate guardrail.
+  Before returning the table, walk your draft rows and build a set of
+  seen keys. For each row, normalize the Company field the same way as
+  in Step 3 (trim, drop trailing "(office)", fold "&"↔"and", ignore case,
+  strip trailing punctuation, drop trailing " Inc"/" LLC"/" LP"/" Ltd"/
+  " Partners"/" Ventures"/" Capital"/" Management" ONLY when doing so
+  merges the row with an already-seen key — otherwise leave the suffix
+  intact so genuinely distinct entities stay separate).
+    • If the normalized key is already seen, the row is a duplicate:
+      KEEP the row that has a named contact (or the more complete of two
+      contact rows) and DROP the other. Do NOT return both.
+    • Explicit failure mode to catch: a "<Person> | … | <Firm>" row
+      followed later by a "— | — | <Firm> | … | —" row for the same
+      firm — the firm-only row is the duplicate; delete it.
+    • Explicit failure mode to catch: two contact rows for the same firm
+      keyed only by capitalization or a trailing "Partners"/"Ventures"
+      the summary table dropped — merge to one row (prefer the row with
+      an email; keep the more specific Title).
+  If this pass reduces the row count, the pre-dedupe count was wrong;
+  regenerate the totals in Step 5 from the FINAL row set.
 
   Step 5: Reply to Chad with a plain-text pipe table, one row per investor:
 
@@ -568,7 +593,11 @@ RULE 17 — PARSING A PITCHBOOK COMPANY PROFILE
     - Sort: rows with a named contact + email first, then contacts without
       email, then firm-only rows alphabetically.
     - After the table, state totals: "<N> unique investors; <M> with named
-      contacts; <K> with email addresses."
+      contacts; <K> with email addresses." These counts come from the
+      FINAL post-dedupe row set, never from an intermediate draft.
+    - Sanity check before sending: <N> in the totals line must equal the
+      number of rows in the table. If they differ, the dedupe pass missed
+      a merge — fix it before sending.
 
   Step 6: STOP. Do not run compare_pdf_contacts, search_people, or any
   write tool unless Chad's email explicitly asks to cross-reference or
