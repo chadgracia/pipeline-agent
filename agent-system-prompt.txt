@@ -528,21 +528,35 @@ RULE 17 — PARSING A PITCHBOOK COMPANY PROFILE
     Lenders, Debt instruments, board members, and company management.
     Angel individuals (e.g. "Eric Schmidt") ARE investors — include them.
 
-  Step 3: Deduplicate. One row per unique investor. A follow-on investor
-  appearing in multiple rounds gets ONE row; combine its rounds in the
-  Series column (e.g. "Seed Jun 2023; Series A Feb 2024; Series C Sep 2025").
-  Treat obvious same-entity pairs (e.g. "Salesforce" vs "Salesforce
-  Ventures") as separate rows if the report lists them separately — do not
-  merge on your own judgment.
+  Step 3: Deduplicate on the INVESTOR ENTITY — never on the contact person.
+  Build a map, one key per unique investing entity:
+    • For a firm investor, the key is the firm name from the "Investors"
+      tables, normalized: trim whitespace, drop trailing office-location
+      suffixes in parentheses (e.g. "Nvidia / NVentures (Santa Clara)" →
+      "Nvidia / NVentures"), treat "&"="and" and ignore case.
+    • For an angel/individual (PitchBook lists the person themselves as the
+      investor — Company is their own name or "Self"), the key is the
+      person's name.
+    • Distinct legal entities stay separate even when related — do NOT merge
+      "Salesforce" vs "Salesforce Ventures", or "BlackRock" vs "Blackrock
+      Innovation Capital Group". Only collapse exact-same-entity duplicates.
+  Every appearance of an entity (across rounds AND across the contact table
+  and the summary table) updates the SAME map entry. Merge all rounds into
+  the Series column (e.g. "Series C: Dec 2019; Series E: Sep 2025").
 
-  Step 4: Match contact details. PitchBook lists named people with phone
-  and email in the "Lead Partners on Deals — Investors" table and similar
-  contact tables. Match each contact to their investor row via the
-  "Representing" column. Per RULE 0: only use phone/email/title values
-  printed in the PDF — never infer an email from a name or domain pattern,
-  and never pull contacts from Advisor or Service Provider tables into
-  investor rows. If an investor has no named contact in the report, leave
-  Name/Title/Phone/Email as "—" and put the firm in the Company column.
+  Step 4: Emit EXACTLY ONE row per map entry.
+    • Contact: if the "Lead Partners on Deals — Investors" table names a
+      person representing that entity, fill Name/Title/Phone/Email from it
+      and keep the firm in the Company column. Use only values printed in
+      the PDF (RULE 0) — never infer an email from a name or domain.
+    • If no named contact exists, Name/Title/Phone/Email = "—" and the firm
+      goes in the Company column.
+    • CRITICAL: a firm that has a named partner appears ONCE, as the contact
+      row. Do NOT also emit a blank-contact row for that same firm. If your
+      draft table contains both "<Person> | … | <Firm>" and "<Firm> | — |
+      … | <Firm>", the second is a duplicate — delete it.
+    Exclude the profiled company's own management and board members (e.g. a
+    contact with an @<profiled-company> email) — they are not investors.
 
   Step 5: Reply to Chad with a plain-text pipe table, one row per investor:
 
