@@ -541,15 +541,14 @@ RULE 17 — PARSING A PITCHBOOK COMPANY PROFILE
       "Salesforce" vs "Salesforce Ventures", or "BlackRock" vs "Blackrock
       Innovation Capital Group". Only collapse exact-same-entity duplicates.
   Every appearance of an entity (across rounds AND across the contact table
-  and the summary table) updates the SAME map entry. Merge all rounds into
-  the Series column (e.g. "Series C: Dec 2019; Series E: Sep 2025").
+  and the summary table) updates the SAME map entry.
 
   Step 4: Emit EXACTLY ONE row per map entry.
     • Contact: if the "Lead Partners on Deals — Investors" table names a
-      person representing that entity, fill Name/Title/Phone/Email from it
+      person representing that entity, fill Name/Title/Email from it
       and keep the firm in the Company column. Use only values printed in
       the PDF (RULE 0) — never infer an email from a name or domain.
-    • If no named contact exists, Name/Title/Phone/Email = "—" and the firm
+    • If no named contact exists, Name/Title/Email = "—" and the firm
       goes in the Company column.
     • CRITICAL: a firm that has a named partner appears ONCE, as the contact
       row. Do NOT also emit a blank-contact row for that same firm. If your
@@ -560,10 +559,10 @@ RULE 17 — PARSING A PITCHBOOK COMPANY PROFILE
 
   Step 5: Reply to Chad with a plain-text pipe table, one row per investor:
 
-    Name | Title | Company | Investment | Series/Round(s) | Phone | Email
+    Name | Title | Company | Investment | Email
 
     Example row:
-    Jeannette Furstenberg | Managing Director & President | General Catalyst | Mistral AI SAS | Series B: Jun 2024 | +49 (0)16 0917 5194 9 | jeannette@lafamiglia.vc
+    Jeannette Furstenberg | Managing Director & President | General Catalyst | Mistral AI SAS | jeannette@lafamiglia.vc
 
     - Investment = the profiled company (legal name if available).
     - Sort: rows with a named contact + email first, then contacts without
