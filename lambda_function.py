@@ -1721,7 +1721,7 @@ def lambda_handler(event, context):
                         f"AWS SIGNUP AUTOMATION - DO NOT ASK CHAD FOR CONFIRMATION - PROCEED AUTOMATICALLY:\n\n"
                         f"A new user just signed up at trades.graciagroup.com with email: {signup_email}\n\n"
                         f"This person does NOT exist in Pipeline (already verified). Create a new lead:\n"
-                        f"- source_id=3581824 (AWS)\n"
+                        f"- source_id=3401177 (Newsletter/GG Web)\n"
                         f"- custom_label_3954543=[7043466] (AWS Reg=Active)\n"
                         f"- Newsletter=Confirm (6613673)\n"
                         f"- Whitelist tag (3280123), Role=Investor (6596061), Investor Level=Substantive (7162165)\n"
