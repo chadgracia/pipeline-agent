@@ -260,7 +260,8 @@ TOOL_SPECS = [
                 "custom_label_3075382": {"type": "integer", "description": "Role: 6596061=Investor, 6438705=Intermediary"},
                 "custom_label_3759163": {"type": "integer", "description": "Transactor Type: 6484811=Family Office, 6484810=Natural Person, 6484812=Institution, 6484808=VC or PE Fund, 7037492=Hedge Fund, 6484813=Wealth Advisor, 6577160=Co-Broker, 6888332=Foreign Finder"},
                 "custom_label_3923758": {"type": "integer", "description": "Investor Level: 7162165=Substantive (default), 6950564=Qualified Purchaser, 6950563=Accredited Investor, 6950561=Unknown"},
-                "custom_label_3775335": {"type": "integer", "description": "Weekly Newsletter: 6613673=Confirm, 6613674=Subscribed"}
+                "custom_label_3775335": {"type": "integer", "description": "Weekly Newsletter: 6613673=Confirm, 6613674=Subscribed"},
+                "lead_source_id": {"type": "integer", "description": "Pipeline native lead source ID (top-level field, not a custom label)"}
             }, "required": ["first_name", "last_name"]}}
         }
     },
@@ -270,7 +271,7 @@ TOOL_SPECS = [
             "description": "Update a contact record fields.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "person_id": {"type": "integer"},
-                "fields": {"type": "object"}
+                "fields": {"type": "object", "description": "Fields to update. Standard fields (e.g. email, phone, lead_source_id) go here directly; custom label fields use custom_label_* keys."}
             }, "required": ["person_id", "fields"]}}
         }
     },
@@ -647,7 +648,7 @@ def _execute_tool_inner(tool_name, tool_input):
                            "work_street", "work_phone",
                            "home_address_1", "home_address_2", "home_city",
                            "home_country", "home_state", "home_postal_code",
-                           "home_email", "home_phone", "source_id"]
+                           "home_email", "home_phone", "source_id", "lead_source_id"]
         custom_fields = {}
         for field, value in tool_input.items():
             if not value:
