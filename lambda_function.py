@@ -534,12 +534,58 @@ def _format_deal(d):
         "pipeline_url": f"https://app.pipelinecrm.com/deals/{d.get('id')}",
     }
 
+_COMPANY_NOISE_WORDS = {
+    "inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation", "co", "company",
+    "holdings", "holding", "group", "technologies", "technology", "tech", "labs", "lab",
+    "laboratories", "systems", "system", "robotics", "dynamics", "industries", "networks",
+    "network", "computing", "sciences", "science", "bio", "health", "space", "energy",
+    "motors", "software", "solutions", "ventures", "partners", "capital", "ai", "plc",
+    "gmbh", "sa", "nv", "bv", "ab", "oy", "pte", "pty", "and", "the",
+}
+
+
+def _company_tokens(name):
+    """Lowercased token list with punctuation and generic corporate words removed."""
+    raw = re.sub(r"[^a-z0-9 ]+", " ", (name or "").lower())
+    toks = [t for t in raw.split() if t]
+    core = [t for t in toks if t not in _COMPANY_NOISE_WORDS]
+    return core or toks
+
+
+def _company_match_score(query, name):
+    """Lower score = closer match. None = no match."""
+    q = (query or "").lower().strip()
+    n = (name or "").lower().strip()
+    if not q or not n:
+        return None
+    if q == n:
+        return 0
+    qt, nt = _company_tokens(q), _company_tokens(n)
+    if qt and nt:
+        if qt == nt:
+            return 1
+        short, long_ = (qt, nt) if len(qt) <= len(nt) else (nt, qt)
+        if long_[:len(short)] == short:
+            return 2
+    if q in n:
+        return 3
+    if n in q and len("".join(_company_tokens(n))) >= 4:
+        return 4
+    return None
+
+
 def _execute_tool_inner(tool_name, tool_input):
 
     if tool_name == "search_companies":
         query = tool_input['name'].lower().strip()
         companies = get_snapshot("companies.json")
-        matches = [c for c in companies if query in (c.get("name") or "").lower()][:10]
+        scored = []
+        for c in companies:
+            s = _company_match_score(query, c.get("name"))
+            if s is not None:
+                scored.append((s, len(c.get("name") or ""), c))
+        scored.sort(key=lambda x: (x[0], x[1]))
+        matches = [c for _, _, c in scored[:10]]
         return [{"id": c["id"], "name": c["name"], "custom_fields": c.get("custom_fields", {})} for c in matches] or {"results": [], "message": "No matches found"}
 
     elif tool_name == "get_company":

@@ -212,7 +212,7 @@ RULE 3 — UPDATING A PERSON
   Step 5: Report success and STOP. No verification, no further lookups.
 
 RULE 4 — CREATING A DEAL
-  Step 1: Look up company via search_companies → get company_id.
+  Step 1: Look up company via search_companies → get company_id. Run the RULE 13 Step 1 ladder before concluding the company is missing.
   Step 2: Look up contact via search_people → get primary_contact_id.
   Step 3: Determine deal_type — "buy" or "sell". This is REQUIRED and must always be set.
 	Step 3b: SYNDICATOR RULE — If the counterparty is a Syndicator (Transactor Type 6859893) and fee terms appear anywhere in the message (management fee, carry, upfront fee, seller fee), create a SELL order regardless of any "buying" language in the message.
@@ -345,7 +345,15 @@ RULE 12 — FINDING DEALS FOR A SECURITY
   Step 3: Return results and STOP.
 
 RULE 13 — CREATING A COMPANY
-  Step 1: Search via search_companies to confirm it doesn't already exist — search the full name AND any known abbreviation/alias. If the company came from an email domain, first resolve the domain to its real company name (see RULE 2 Step 2b) before searching — e.g. npm.com → search "Nasdaq Private Markets" and "NPM". Never create a company that already exists under its full name or a common abbreviation.
+  Step 1 — DUPLICATE SEARCH LADDER, mandatory before any create_company. search_companies now matches longer and shorter variants of a name, but you must still search the ROOT, not only the full string. Run every rung and pool the results:
+    a) the name exactly as written
+    b) the ROOT name, with legal and descriptor words stripped — Inc, LLC, Ltd, Corp, Co, Holdings, Group, Technologies, Technology, Tech, Labs, Systems, Robotics, Dynamics, Industries, Networks, Computing, Sciences, Bio, Health, Space, Energy, Motors, Software, Solutions, Ventures, Partners, Capital, AI. "Saronic Technologies" → search "Saronic"; "Anduril Industries" → "Anduril"; "Figure AI" → "Figure"
+    c) the first word alone, when distinctive (4+ characters, not generic like New, Global, American, First)
+    d) any abbreviation, ticker, or alias, and the resolved domain name — npm.com → search "Nasdaq Private Markets" AND "NPM" (resolve the domain per RULE 2 Step 2b before searching)
+  Step 1b — ADJUDICATE the hits. Two names are the SAME company when one is the root, prefix, or expansion of the other and nothing contradicts it (same sector, same market, same website). "Saronic" and "Saronic Technologies" are one company. Use the existing record under its existing name — never create a parallel record, never rename the existing one. If the existing record is thinner than your research (missing org type, valuation, website, summary), UPDATE it under RULE 6; that is the correct outcome, not a second company. Only treat them as separate entities when there is positive evidence of two distinct companies — different sector, different country, different website (e.g. "Scale AI" vs "Scale Computing").
+  Step 1c — EXTRA SCRUTINY for well-known issuers. If the company is a widely covered private issuer with an institutional round, secondary market pricing, or live deal interest, a "no matches" result is far more likely a name-form problem than a real gap. Re-run the ladder on the root before creating. If the name also has no securities dropdown entry, treat that as the same warning sign, not as a footnote to report after creating.
+  Step 1d — CREATE only after the full ladder comes back empty. Creating is normal and expected for genuinely new names, including automated intake (AWS/Cognito signups, referrals, research lists). Do not stall or ask permission for a name that truly is not there.
+  Step 1e — DISCLOSE. Whenever you create a company, state it explicitly in your report: "NEW COMPANY CREATED: [name] — searched [every query you ran], no match found." That line is how Chad catches a bad duplicate immediately.
   Step 2: Research using web_search and fetch_webpage — max 3 tool calls:
     a) web_search("[company name]") — what the company does, sector, stage, last round
     b) fetch_webpage on company website if found
