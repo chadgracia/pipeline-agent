@@ -621,13 +621,14 @@ def _execute_tool_inner(tool_name, tool_input):
 
     elif tool_name == "get_person":
         pid = int(tool_input['person_id'])
+        result = call_pipeline_api("GET", f"/people/{pid}.json")
+        if result["status"] == 200:
+            return result["data"]
         people = get_snapshot("people.json")
         for p in people:
             if p.get("id") == pid:
                 return p
-        # Fallback to live API if not in snapshot
-        result = call_pipeline_api("GET", f"/people/{pid}.json")
-        return result["data"] if result["status"] == 200 else {"error": f"Person {pid} not found"}
+        return {"error": f"Person {pid} not found"}
 
     elif tool_name == "search_deals":
         if not any(k in tool_input for k in ["company_id", "person_id", "name"]):
