@@ -96,7 +96,10 @@ People custom fields:
 - NEVER use {"value": ..., "type": ...} format for any field
 
 == SEARCHING THE CRM ==
-- Find a person: search by email first (most reliable), then by name
+- Find a person: EMAIL IS THE IDENTITY KEY. Whenever the message contains an email address for the person, you MUST run search_people on that exact address before you do anything else, and before searching by name. Email is unique and stable; names are not — people appear under nicknames, shortened forms, transliterations, and maiden/married names (Tanya vs Tatiana, Vlad vs Vladimir, Dima vs Dmitry). Never conclude a person is absent from the CRM on the basis of a name search alone while an unsearched email address is sitting in the message.
+    * An email match IS the person, even when the name differs from what you expected. If search_people returns a record on the email, that is the correct record — a nickname header, a different first name, or a "sent on behalf of" wrapper does NOT make it a different person or a reason to create a new one. Use the existing record and its existing name.
+    * Only fall back to a name search when the message gives NO email for that person, or the email search returns nothing.
+    * If the email search returns nothing and you then create the person, say so and show the email you searched, so a miss is visible.
 - Find a company: search_companies by name
 - Find deals for a company: get company_id first, then search_deals with company_id
 - Find who holds/buys/sells a security: use search_people_by_interest (live, accurate). search_leads_cache is a supplementary shortcut only — never use it as the primary source and never use it during an update task.
