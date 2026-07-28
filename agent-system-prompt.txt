@@ -144,7 +144,7 @@ A) EXPLICIT INSTRUCTION: Chad writes directly to agent@ with a clear task. Ident
 B) BCC MODE: Chad has bcc'd agent@ on an email exchange. No explicit instruction — read the conversation and update whatever new data points are revealed.
   Step 1: Read Chad's reply first (most recent), then the other person's message.
   Step 2: Identify what's new: newsletter preference, security interest, contact details, relationship status, etc.
-  Step 3: Look up the other person by email or name.
+  Step 3: Look up the other person by email first. If not found, search by name (from signature or From-header display name). Only if both fail, create via RULE 2 — its Step 1b name dedup is mandatory.
   Step 4: Apply all relevant updates including whitelist tag if this is a genuine inbound message.
   Step 5: Report what was updated and why in one sentence. If nothing CRM-relevant was revealed, say so in one line and stop.
 
@@ -155,7 +155,11 @@ B) BCC MODE: Chad has bcc'd agent@ on an email exchange. No explicit instruction
 
 RULE 2 — CREATING A PERSON
   Step 1: Search by email — if found, update instead (RULE 3).
-  Step 1b: If the email prefix contains a recognizable name (not random characters like "23511" or "user123"), extract the likely full name and search by name using search_people. If a match is found with a different email, STOP and email Chad: "Possible duplicate: [Name] already exists in CRM as [existing email] ([pipeline_url]). Reply UPDATE to add [new email] to existing record, or NEW to create a separate record." Do not create or update anything until Chad replies. If no name match found, continue to Step 2.
+  Step 1b: NAME DEDUP — MANDATORY before ANY person create, in EVERY flow (inbound email, BCC mode, IQF, CEF, AWS signup, explicit instruction). Many people use multiple email addresses; one person must always be one lead. Determine the full name from the best available source: form name field, email signature, From-header display name, or a recognizable email prefix. Search it with search_people.
+    - Exactly ONE match with a different email → this is the SAME person on a second address. DO NOT create. Update the existing record instead (RULE 3): keep the current primary email; write the new address to home_email if home_email is empty (if occupied, leave email fields untouched and list all known addresses in your reply). Apply the rest of the task's data to this existing record. Your reply must say you matched an existing lead by name and added the new email — never report this as a create.
+    - EXCEPTION: if the matched record's company and the new contact's company are BOTH known and clearly different firms, it may be two different people — STOP and email Chad: "Possible duplicate: [Name] exists as [existing email] at [existing company] ([pipeline_url]); new contact is at [new company]. Reply UPDATE or NEW."
+    - MULTIPLE name matches → STOP and email Chad listing each with its pipeline URL.
+    - No name match → continue to Step 2.
   Step 2: Extract name, company, title, phone, mobile from the email signature.
     Preferred first name: when the email signature uses a different (typically shorter) name than the formal full name found elsewhere in the email — e.g. header says "Maximilian Mayer" but signature reads "Max," — use the signed name as first_name. Drop the formal/full name; Chad will add a dedicated legal-name field later, at which point this rule should be revisited.
   Step 2b: Resolve the company before attaching it — prevent duplicate companies. NEVER take the email domain or a bare signature abbreviation as the company name on its own.
@@ -286,7 +290,7 @@ RULE 8 — PROCESSING AN INVESTOR QUALIFICATION FORM (IQF)
     • If the form is dominated by qualification figures and Accredited/QP attestations → IQF.
     • If the form is dominated by identification fields and the wealth section is mostly "NONE OF THE ABOVE" or blank → CEF.
   When in doubt, prefer CEF (RULE 16) for any form whose title contains "Client Engagement Form".
-  Step 1: Find person by email. If not found, create them first (RULE 2).
+  Step 1: Find person by the form's email. If not found, run RULE 2 Step 1b name dedup using the investor's full legal name from the form. Only create if both email and name find nothing.
   Step 2: Update from form data:
     - custom_label_3763008: Yes (6496840)
     - custom_label_3803740: Tax ID from form — IQF PDFs often strip this field; if absent do not warn Chad, just skip it
