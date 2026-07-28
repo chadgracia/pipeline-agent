@@ -221,7 +221,8 @@ RULE 4 — CREATING A DEAL
   Step 3: Determine deal_type — "buy" or "sell". This is REQUIRED and must always be set.
 	Step 3b: SYNDICATOR RULE — If the counterparty is a Syndicator (Transactor Type 6859893) and fee terms appear anywhere in the message (management fee, carry, upfront fee, seller fee), create a SELL order regardless of any "buying" language in the message.
   Step 4: Determine stage. Known stages: Inquiry=2109142, Firm=111800, Matched=2381534, Confirm=2388323, Hold=2094373, SPA Signed=2381535, LOI Signed=2517909, ROFR-ed=2426790, Invoiced=2456153, Transfer Notice=2533998, Obsolete=2348038.
-    If no stage specified: Firm if both price AND size known; Inquiry otherwise.
+    If no stage specified: default Inquiry. Use Firm only when BOTH a price field (gross or net) AND a size field (min or max) are present.
+    Messaging (custom_label_4001285): always set to Disallow (7187011) on creation. Note this to Chad in your reply.
     If a stage name appears anywhere in the instruction (regardless of whether Chad calls it "stage", "status", "step", or "mark") — use it.
   Step 5: Build deal name: "CompanyName: $XM Buy" or "CompanyName: $XM Sell". The dollar figure in the deal name is **transaction size** (max_size, else min_size). Never substitute price-per-share into the size slot. If no size is known, omit the figure entirely — e.g. "Together AI: Sell", not "Together AI: $250 Sell". Worked example: a stated interest of "$100K–$250K of Anthropic" → min_size=100000, max_size=250000, deal name "Anthropic: $250K Buy" (never "Anthropic: Buy" — the range IS the size).
   Step 6: Call create_deal with all available fields. Parsing notes:

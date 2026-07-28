@@ -408,12 +408,12 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "create_deal",
-            "description": "Create a new deal in Pipeline CRM. Always look up company_id via search_companies and primary_contact_id via search_people first. Deal name format: 'CompanyName: $XM Buy/Sell'. Revenue type is always Commission. Stage is Firm if price and size are known, Inquiry if not.",
+            "description": "Create a new deal in Pipeline CRM. Always look up company_id via search_companies and primary_contact_id via search_people first. Deal name format: 'CompanyName: $XM Buy/Sell'. Revenue type is always Commission. Stage is Firm only if BOTH a price field (gross or net) AND a size field (min or max) are present; Inquiry otherwise. Messaging is always set to Disallow on creation.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "name": {"type": "string", "description": "Deal name e.g. 'SpaceX: $2M Sell'"},
                 "company_id": {"type": "integer", "description": "Pipeline company ID — look up via search_companies first"},
                 "primary_contact_id": {"type": "integer", "description": "Pipeline person ID — look up via search_people first"},
-                "deal_stage_id": {"type": "integer", "description": "2109142=Inquiry, 111800=Firm, 2381534=Matched, 2388323=Confirm, 2094373=Hold. Use Firm if price AND size known, else Inquiry."},
+                "deal_stage_id": {"type": "integer", "description": "2109142=Inquiry, 111800=Firm, 2381534=Matched, 2388323=Confirm, 2094373=Hold. Default Inquiry; use Firm only when BOTH a price field (gross or net) AND a size field (min or max) are present."},
                 "deal_type": {"type": "string", "enum": ["buy", "sell"], "description": "buy or sell — required"},
                 "gross": {"type": "number", "description": "Gross price per share"},
                 "net": {"type": "number", "description": "Net price per share"},
@@ -1396,6 +1396,8 @@ def _execute_tool_inner(tool_name, tool_input):
                     custom_fields["custom_label_3065662"] = 5080984  # Yes
                 if not nexus_explicit:
                     custom_fields["custom_label_3751449"] = 6460632  # Direct
+
+        custom_fields["custom_label_4001285"] = 7187011  # Messaging = Disallow
 
         payload = {"deal": {
             "name": tool_input["name"],
