@@ -325,6 +325,13 @@ TOOL_SPECS = [
     },
     {
         "toolSpec": {
+            "name": "add_security",
+            "description": "Add a NEW security as a dropdown entry in the person Buy, Sell, and Holding interest fields. ONLY call this when Chad explicitly instructs you to add a new tracked security. NEVER call it automatically while processing emails or forms. Checks for near-duplicate names first and refuses if one exists.",
+            "inputSchema": {"json": {"type": "object", "properties": {"security_name": {"type": "string", "description": "Exact security name to create, e.g. 'Moonshot AI'"}}, "required": ["security_name"]}}
+        }
+    },
+    {
+        "toolSpec": {
             "name": "search_people_by_interest",
             "description": "Find people who hold, want to buy, or want to sell a specific security. Use get_security_ids first to get the entry_id.",
             "inputSchema": {"json": {"type": "object", "properties": {
@@ -947,6 +954,39 @@ def _execute_tool_inner(tool_name, tool_input):
         if names:
             return {"results": [lookup_one(n) for n in names]}
         return lookup_one(tool_input.get("security_name", ""))
+
+    elif tool_name == "add_security":
+        name = (tool_input.get("security_name") or "").strip()
+        if not name:
+            return {"error": "security_name is required"}
+        if not SECURITY_IDS:
+            _refresh_security_ids_from_api()
+        def _norm(s):
+            return s.lower().rstrip("$#").strip()
+        target = _norm(name)
+        near = [k for k in SECURITY_IDS if _norm(k) == target or target in _norm(k) or _norm(k) in target]
+        if near:
+            return {"error": f"Refusing to create '{name}': near-match already exists", "existing": near[:5], "hint": "Use get_security_ids with the existing name, or confirm with Chad this is genuinely a different security."}
+        field_roles = {3322093: "b", 3759156: "s", 3740611: "h"}
+        created = {"h": None, "b": None, "s": None}
+        errors = []
+        for label_id, role in field_roles.items():
+            payload = {"custom_field_label_dropdown_entry": {"custom_field_label_id": label_id, "name": name}}
+            result = call_pipeline_api("POST", "/admin/custom_field_label_dropdown_entries.json", payload)
+            if result.get("status") == 200 and isinstance(result.get("data"), dict):
+                entry = result["data"].get("custom_field_label_dropdown_entry") or result["data"]
+                eid = entry.get("id")
+                if eid:
+                    created[role] = int(eid)
+                    continue
+            errors.append({"field_id": label_id, "status": result.get("status"), "data": str(result.get("data"))[:200]})
+        if any(created.values()):
+            SECURITY_IDS[name] = created
+        if errors:
+            if all(e.get("status") in (401, 403) for e in errors):
+                return {"error": "API credentials lack admin rights for dropdown entry creation (401/403). Tell Chad.", "details": errors}
+            return {"partial": created, "errors": errors, "warning": "Security is half-created across fields — report this to Chad, do not proceed silently."}
+        return {"created": name, "holding_entry_id": created["h"], "buy_interest_entry_id": created["b"], "sell_interest_entry_id": created["s"], "note": "New entries appear at the bottom of the Pipeline dropdown UI until re-sorted."}
 
     elif tool_name == "search_people_by_interest":
         field_map = {"holding": "custom_label_3740611", "buy": "custom_label_3322093", "sell": "custom_label_3759156"}
