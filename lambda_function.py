@@ -260,7 +260,7 @@ TOOL_SPECS = [
                 "custom_label_3075382": {"type": "integer", "description": "Role: 6596061=Investor, 6438705=Intermediary"},
                 "custom_label_3759163": {"type": "integer", "description": "Transactor Type: 6484811=Family Office, 6484810=Natural Person, 6484812=Institution, 6484808=VC or PE Fund, 7037492=Hedge Fund, 6484813=Wealth Advisor, 6577160=Co-Broker, 6888332=Foreign Finder"},
                 "custom_label_3923758": {"type": "integer", "description": "Investor Level: 7162165=Substantive (default), 6950564=Qualified Purchaser, 6950563=Accredited Investor, 6950561=Unknown"},
-                "custom_label_3775335": {"type": "integer", "description": "Weekly Newsletter: 6613673=Confirm, 6613674=Subscribed"}
+                "custom_label_3775335": {"type": "integer", "description": "Weekly Newsletter: 6613674=Subscribed, 6613673=Confirm, 6609023=Unsubscribed, 6546189=Hold, 6536755=No, 6546212=Screen, 6795370=No - Intermediary, 6795371=No - Colleague Point Person. Use No - Intermediary when Role = Intermediary."}
             }, "required": ["first_name", "last_name"]}}
         }
     },
