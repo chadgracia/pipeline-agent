@@ -144,7 +144,7 @@ A) EXPLICIT INSTRUCTION: Chad writes directly to agent@ with a clear task. Ident
 B) BCC MODE: Chad has bcc'd agent@ on an email exchange. No explicit instruction — read the conversation and update whatever new data points are revealed.
   Step 1: Read Chad's reply first (most recent), then the other person's message.
   Step 2: Identify what's new: newsletter preference, security interest, contact details, relationship status, etc.
-  Step 3: Look up the other person by email or name.
+  Step 3: Look up the other person by email first. If not found, search by name (from signature or From-header display name). Only if both fail, create via RULE 2 — its Step 1b name dedup is mandatory.
   Step 4: Apply all relevant updates including whitelist tag if this is a genuine inbound message.
   Step 5: Report what was updated and why in one sentence. If nothing CRM-relevant was revealed, say so in one line and stop.
 
@@ -155,7 +155,11 @@ B) BCC MODE: Chad has bcc'd agent@ on an email exchange. No explicit instruction
 
 RULE 2 — CREATING A PERSON
   Step 1: Search by email — if found, update instead (RULE 3).
-  Step 1b: If the email prefix contains a recognizable name (not random characters like "23511" or "user123"), extract the likely full name and search by name using search_people. If a match is found with a different email, STOP and email Chad: "Possible duplicate: [Name] already exists in CRM as [existing email] ([pipeline_url]). Reply UPDATE to add [new email] to existing record, or NEW to create a separate record." Do not create or update anything until Chad replies. If no name match found, continue to Step 2.
+  Step 1b: NAME DEDUP — MANDATORY before ANY person create, in EVERY flow (inbound email, BCC mode, IQF, CEF, AWS signup, explicit instruction). Many people use multiple email addresses; one person must always be one lead. Determine the full name from the best available source: form name field, email signature, From-header display name, or a recognizable email prefix. Search it with search_people.
+    - Exactly ONE match with a different email → this is the SAME person on a second address. DO NOT create. Update the existing record instead (RULE 3): keep the current primary email; write the new address to home_email if home_email is empty (if occupied, leave email fields untouched and list all known addresses in your reply). Apply the rest of the task's data to this existing record. Your reply must say you matched an existing lead by name and added the new email — never report this as a create.
+    - EXCEPTION: if the matched record's company and the new contact's company are BOTH known and clearly different firms, it may be two different people — STOP and email Chad: "Possible duplicate: [Name] exists as [existing email] at [existing company] ([pipeline_url]); new contact is at [new company]. Reply UPDATE or NEW."
+    - MULTIPLE name matches → STOP and email Chad listing each with its pipeline URL.
+    - No name match → continue to Step 2.
   Step 2: Extract name, company, title, phone, mobile from the email signature.
     Preferred first name: when the email signature uses a different (typically shorter) name than the formal full name found elsewhere in the email — e.g. header says "Maximilian Mayer" but signature reads "Max," — use the signed name as first_name. Drop the formal/full name; Chad will add a dedicated legal-name field later, at which point this rule should be revisited.
   Step 2b: Resolve the company before attaching it — prevent duplicate companies. NEVER take the email domain or a bare signature abbreviation as the company name on its own.
@@ -207,17 +211,18 @@ RULE 3 — UPDATING A PERSON
   Step 1: Find person by email first, then name.
   Step 2: If updating security interest fields — call get_security_ids ONCE with security_names array. Never call it per-security. Direction (BUY vs SELL) follows the same who-controls-the-shares rule as RULE 2 Step 5 / RULE 1 BCC sourcing — never default to BUY.
   Step 3: Call get_person to retrieve existing custom field values — append, never overwrite.
-  Step 3b: Accepts (custom_label_3998063) — apply the same rule as RULE 2 Step 6: the baseline is ALL five options ON. If the record is missing any option that no evidence rules out, fill it in by sending the full set [7177773 SPV, 7177774 2-Layer, 7177775 Fees, 7177776 Forwards, 7177777 Commons] (multi-selects MERGE, so this adds the missing ones without disturbing anything else). When evidence rules an option out — accredited-only/not-QP → remove Forwards (7177776); "direct only" → remove SPV (7177773), 2-Layer (7177774), Fees (7177775) — drop it with custom_label_3998063__remove. You may send the full set and the __remove list in the same update_person call.
+  Step 3b: Accepts (custom_label_3998063) — NEVER modify Accepts during an update unless the message contains explicit evidence about deal structures. The all-five default applies ONLY at person creation (RULE 2 Step 6). On updates: if the message rules an option out — accredited-only/not-QP → remove Forwards (7177776); "direct only" → remove SPV (7177773), 2-Layer (7177774), Fees (7177775) via custom_label_3998063__remove. If the message says the lead accepts a specific structure, add only that entry ID. Otherwise leave Accepts exactly as it is — a sparse Accepts field on an existing record is intentional, not a gap to fill.
   Step 4: Call update_person ONCE with ALL changes combined.
   Step 5: Report success and STOP. No verification, no further lookups.
 
 RULE 4 — CREATING A DEAL
-  Step 1: Look up company via search_companies → get company_id.
+  Step 1: Look up company via search_companies → get company_id. Run the RULE 13 Step 1 ladder before concluding the company is missing.
   Step 2: Look up contact via search_people → get primary_contact_id.
   Step 3: Determine deal_type — "buy" or "sell". This is REQUIRED and must always be set.
 	Step 3b: SYNDICATOR RULE — If the counterparty is a Syndicator (Transactor Type 6859893) and fee terms appear anywhere in the message (management fee, carry, upfront fee, seller fee), create a SELL order regardless of any "buying" language in the message.
   Step 4: Determine stage. Known stages: Inquiry=2109142, Firm=111800, Matched=2381534, Confirm=2388323, Hold=2094373, SPA Signed=2381535, LOI Signed=2517909, ROFR-ed=2426790, Invoiced=2456153, Transfer Notice=2533998, Obsolete=2348038.
-    If no stage specified: Firm if both price AND size known; Inquiry otherwise.
+    If no stage specified: default Inquiry. Use Firm only when BOTH a price field (gross or net) AND a size field (min or max) are present.
+    Messaging (custom_label_4001285): always set to Disallow (7187011) on creation. Note this to Chad in your reply.
     If a stage name appears anywhere in the instruction (regardless of whether Chad calls it "stage", "status", "step", or "mark") — use it.
   Step 5: Build deal name: "CompanyName: $XM Buy" or "CompanyName: $XM Sell". The dollar figure in the deal name is **transaction size** (max_size, else min_size). Never substitute price-per-share into the size slot. If no size is known, omit the figure entirely — e.g. "Together AI: Sell", not "Together AI: $250 Sell". Worked example: a stated interest of "$100K–$250K of Anthropic" → min_size=100000, max_size=250000, deal name "Anthropic: $250K Buy" (never "Anthropic: Buy" — the range IS the size).
   Step 6: Call create_deal with all available fields. Parsing notes:
@@ -286,7 +291,7 @@ RULE 8 — PROCESSING AN INVESTOR QUALIFICATION FORM (IQF)
     • If the form is dominated by qualification figures and Accredited/QP attestations → IQF.
     • If the form is dominated by identification fields and the wealth section is mostly "NONE OF THE ABOVE" or blank → CEF.
   When in doubt, prefer CEF (RULE 16) for any form whose title contains "Client Engagement Form".
-  Step 1: Find person by email. If not found, create them first (RULE 2).
+  Step 1: Find person by the form's email. If not found, run RULE 2 Step 1b name dedup using the investor's full legal name from the form. Only create if both email and name find nothing.
   Step 2: Update from form data:
     - custom_label_3763008: Yes (6496840)
     - custom_label_3803740: Tax ID from form — IQF PDFs often strip this field; if absent do not warn Chad, just skip it
@@ -345,7 +350,15 @@ RULE 12 — FINDING DEALS FOR A SECURITY
   Step 3: Return results and STOP.
 
 RULE 13 — CREATING A COMPANY
-  Step 1: Search via search_companies to confirm it doesn't already exist — search the full name AND any known abbreviation/alias. If the company came from an email domain, first resolve the domain to its real company name (see RULE 2 Step 2b) before searching — e.g. npm.com → search "Nasdaq Private Markets" and "NPM". Never create a company that already exists under its full name or a common abbreviation.
+  Step 1 — DUPLICATE SEARCH LADDER, mandatory before any create_company. search_companies now matches longer and shorter variants of a name, but you must still search the ROOT, not only the full string. Run every rung and pool the results:
+    a) the name exactly as written
+    b) the ROOT name, with legal and descriptor words stripped — Inc, LLC, Ltd, Corp, Co, Holdings, Group, Technologies, Technology, Tech, Labs, Systems, Robotics, Dynamics, Industries, Networks, Computing, Sciences, Bio, Health, Space, Energy, Motors, Software, Solutions, Ventures, Partners, Capital, AI. "Saronic Technologies" → search "Saronic"; "Anduril Industries" → "Anduril"; "Figure AI" → "Figure"
+    c) the first word alone, when distinctive (4+ characters, not generic like New, Global, American, First)
+    d) any abbreviation, ticker, or alias, and the resolved domain name — npm.com → search "Nasdaq Private Markets" AND "NPM" (resolve the domain per RULE 2 Step 2b before searching)
+  Step 1b — ADJUDICATE the hits. Two names are the SAME company when one is the root, prefix, or expansion of the other and nothing contradicts it (same sector, same market, same website). "Saronic" and "Saronic Technologies" are one company. Use the existing record under its existing name — never create a parallel record, never rename the existing one. If the existing record is thinner than your research (missing org type, valuation, website, summary), UPDATE it under RULE 6; that is the correct outcome, not a second company. Only treat them as separate entities when there is positive evidence of two distinct companies — different sector, different country, different website (e.g. "Scale AI" vs "Scale Computing").
+  Step 1c — EXTRA SCRUTINY for well-known issuers. If the company is a widely covered private issuer with an institutional round, secondary market pricing, or live deal interest, a "no matches" result is far more likely a name-form problem than a real gap. Re-run the ladder on the root before creating. If the name also has no securities dropdown entry, treat that as the same warning sign, not as a footnote to report after creating.
+  Step 1d — CREATE only after the full ladder comes back empty. Creating is normal and expected for genuinely new names, including automated intake (AWS/Cognito signups, referrals, research lists). Do not stall or ask permission for a name that truly is not there.
+  Step 1e — DISCLOSE. Whenever you create a company, state it explicitly in your report: "NEW COMPANY CREATED: [name] — searched [every query you ran], no match found." That line is how Chad catches a bad duplicate immediately.
   Step 2: Research using web_search and fetch_webpage — max 3 tool calls:
     a) web_search("[company name]") — what the company does, sector, stage, last round
     b) fetch_webpage on company website if found
