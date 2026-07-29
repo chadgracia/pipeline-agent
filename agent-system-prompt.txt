@@ -69,7 +69,7 @@ People custom fields:
 - 3998063 = Accepts (multi_select): 7177773=SPV, 7177774=2-Layer, 7177775=Fees, 7177776=Forwards, 7177777=Commons
   → Deal structures/terms the investor is willing to accept. Note the option is "Forwards" (plural), not "Forward".
 - 3790644 = Monthly Newsletter: 6582989=Subscribed, 6582990=Unsubscribed, 6582987=Screen
-- 3775335 = Weekly Newsletter: 6613674=Subscribed, 6613673=Confirm, 6609023=Unsubscribed, 6546189=Hold, 6536755=No, 6546212=Screen
+- 3775335 = Weekly Newsletter: 6613674=Subscribed, 6613673=Confirm, 6609023=Unsubscribed, 6546189=Hold, 6536755=No, 6546212=Screen, 6795370=No - Intermediary, 6795371=No - Colleague Point Person
   → Subscribed: they replied to opt-in, asked to stay on list, or explicitly asked for updates
   → Confirm: they reached out about something else with no mention of the newsletter
 - 3075382 = Role: 6596061=Investor (default), 6438705=Intermediary
@@ -194,6 +194,7 @@ RULE 2 — CREATING A PERSON
         → If the lead says "direct only" (or otherwise rules out SPV wrappers entirely), remove SPV (7177773), 2-Layer (7177774), AND Fees (7177775). Forwards and Commons stay unless other evidence rules them out.
         → Otherwise leave all five selected. Never reduce Accepts to a single value just because one structure was mentioned in passing — defaulting to all options is the rule.
   Step 7: Set tag and newsletter together — they are always paired:
+    - If Role = Intermediary (6438705): Newsletter = No - Intermediary (6795370). Tag still follows the rules below.
     - If the person actively reached out to Chad (emailed in, replied, registered on AWS):
         tag = Whitelist (3280123)
         Newsletter = Subscribed (6613674) if they explicitly asked for updates or to stay on the list
