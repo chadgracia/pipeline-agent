@@ -21,7 +21,7 @@ AWS Lambda that acts as a CRM assistant for Chad Gracia (Rainmaker Securities, F
 
 ## Deploy
 - **Prompt changes** (`agent-system-prompt.txt`): commit to `main` → GitHub Action syncs to S3 → live on next Lambda invocation. No manual step.
-- **Code changes** (`lambda_function.py`): merging to `main` is **not** enough. The Lambda function in AWS must be redeployed manually (Console / CLI). There is no auto-deploy workflow for code. Call this out in the merge summary when a PR touches code.
+- **Code changes** (`lambda_function.py`): Deploys are automatic: push/merge to main triggers `.github/workflows/deploy.yml`, which zips `lambda_function.py` and runs `aws lambda update-function-code` on the pipeline-agent Lambda via the `github-actions-deploy` OIDC role. No manual release step.
 
 ## Pipeline CRM custom-field IDs (most-used)
 - `custom_label_3796440` — CEF Submitted: 6600515=Yes, 6600514=Pending, 6600513=No, 6600516=N/A
