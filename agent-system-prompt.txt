@@ -256,6 +256,7 @@ RULE 4 — CREATING A DEAL
         * "3-layer" → Structure=Fund, Layers=3-Layer SPV
         * Structure=Direct means no SPV wrapper at all — only set this if explicitly stated, or if ROFR is mentioned (ROFR always indicates a direct share transfer)
         * The word "direct" in a layers context (e.g. "direct to cap table") describes the SPV's position, NOT the deal structure
+    - REFRESH: every new deal gets Refresh (custom_label_3994687) = 0 unless Chad specifies a number. Pass refresh explicitly in create_deal; to change later, update_deal with custom_label_3994687.
   Step 7: Return deal_url. STOP.
 
 RULE 5 — UPDATING A DEAL

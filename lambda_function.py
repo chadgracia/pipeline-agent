@@ -435,7 +435,8 @@ TOOL_SPECS = [
                 "seller_fee": {"type": "number", "description": "One-time upfront seller fee % (not annual). Use for 'upfront fee', 'one-time fee', or 'seller fee' mentions."},
                 "partner_fee": {"type": "number", "description": "Fee % charged by a co-broker, foreign finder, or other intermediary that is NOT covered by our standard fee-sharing agreement. Use this when a third party is charging their own separate fee to the client that Chad does not share in."},
                 "layers": {"type": "string", "enum": ["SPV on cap table", "2-Layer SPV", "3-Layer SPV"], "description": "SPV layer structure"},
-                "num_shares": {"type": "number", "description": "Number of shares in the deal"}
+                "num_shares": {"type": "number", "description": "Number of shares in the deal"},
+                "refresh": {"type": "number", "description": "Days before stale notice (custom_label_3994687). ALWAYS pass 0 unless Chad explicitly gives another number. 0 = never goes stale."}
             }, "required": ["name", "company_id", "primary_contact_id", "deal_stage_id", "deal_type"]}}
         }
     },
@@ -1413,6 +1414,7 @@ def _execute_tool_inner(tool_name, tool_input):
             custom_fields["custom_label_3938743"] = layers_map[tool_input["layers"]]
         if tool_input.get("num_shares"):
             custom_fields["custom_label_3070843"] = float(tool_input["num_shares"])
+        custom_fields["custom_label_3994687"] = float(tool_input["refresh"]) if tool_input.get("refresh") is not None else 0.0
 
         # Auto-set CP Direct and Nexus from primary contact's Role, unless explicitly provided
         nexus_explicit = tool_input.get("nexus") in nexus_map
