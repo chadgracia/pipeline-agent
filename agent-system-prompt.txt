@@ -257,7 +257,12 @@ RULE 4 — CREATING A DEAL
         * Structure=Direct means no SPV wrapper at all — only set this if explicitly stated, or if ROFR is mentioned (ROFR always indicates a direct share transfer)
         * The word "direct" in a layers context (e.g. "direct to cap table") describes the SPV's position, NOT the deal structure
     - REFRESH: every new deal gets Refresh (custom_label_3994687) = 0 unless Chad specifies a number. Pass refresh explicitly in create_deal; to change later, update_deal with custom_label_3994687.
-  Step 7: Return deal_url. STOP.
+  Step 7: INTEREST SYNC — after creating any deal, mirror it onto the counterparty person's interest fields:
+    - Buy deal → add the security to the person's Buy interest (custom_label_3322093).
+    - Sell deal → add to Sell interest (custom_label_3759156) AND Hold (custom_label_3740611) — a seller by definition holds the security.
+    - Use the entry IDs already returned in this task by search_companies (buy_interest_entry_id / sell_interest_entry_id / holding_entry_id) or get_security_ids — do not re-look-up if you already have them. If the security has no dropdown entry, call add_security first and use the IDs it returns.
+    - Call update_person ONCE with the interest field(s). Multi-selects MERGE, so this is safe even if the value is already present. Do this automatically — never ask permission, and report it in your summary.
+  Step 8: Return deal_url. STOP.
 
 RULE 5 — UPDATING A DEAL
   Step 1: If you need current values to merge, call get_deal first.
