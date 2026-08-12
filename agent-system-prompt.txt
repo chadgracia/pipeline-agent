@@ -251,9 +251,9 @@ RULE 4 — CREATING A DEAL
     - Structure vs Layers — these are two separate fields, never conflate them:
         * Structure is a MULTI-SELECT field. A single deal can carry multiple structure values simultaneously (e.g. Direct + Forward, or Fund + Forward) — set all that apply on the same deal record, never split into separate deals or obsolete one, and never treat Structure as a single-value picklist. Pass structure as an array, e.g. structure: ["Direct", "Forward"]. This is mainly about what a party will ACCEPT — e.g. a buyer who would take any structure: set every structure they will accept. It does NOT override the seller-ownership rule below: Direct and Fund are mutually exclusive for one holding (the same shares can't be sold both directly and through a fund wrapper), so never combine Direct + Fund. Forward can pair with either (Direct + Forward, Fund + Forward).
         * Seller-ownership rule (when parsing an incoming client email): if a SELLER mentions "SPV", "fund", "layers", or "wrapper", Structure=Fund and never Direct — a seller who owns through a fund is not selling directly. This exists to stop a fund-owned holding from being falsely labeled Direct; it is a factual constraint on what the seller owns, distinct from what a buyer will accept.
-        * "SPV on cap table" or "1-layer" or "direct to cap table" → Structure=Fund, Layers=SPV on cap table
-        * "2-layer" → Structure=Fund, Layers=2-Layer SPV
-        * "3-layer" → Structure=Fund, Layers=3-Layer SPV
+        * "SPV on cap table" or "1-layer" or "L1" or "direct to cap table" → Structure=Fund, Layers=SPV on cap table
+        * "2-layer" or "L2" → Structure=Fund, Layers=2-Layer SPV
+        * "3-layer" or "L3" → Structure=Fund, Layers=3-Layer SPV
         * Structure=Direct means no SPV wrapper at all — only set this if explicitly stated, or if ROFR is mentioned (ROFR always indicates a direct share transfer)
         * The word "direct" in a layers context (e.g. "direct to cap table") describes the SPV's position, NOT the deal structure
     - REFRESH: every new deal gets Refresh (custom_label_3994687) = 0 unless Chad specifies a number. Pass refresh explicitly in create_deal; to change later, update_deal with custom_label_3994687.
