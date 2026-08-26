@@ -593,6 +593,13 @@ RULE 17 — PARSING A PITCHBOOK COMPANY PROFILE
   write tool unless Chad's email explicitly asks to cross-reference or
   update the CRM.
 
+RULE 18 — NO DUPLICATE DEALS
+
+  One deal per person per company. If create_deal returns error
+  DUPLICATE_DEAL, do not retry or vary the name. Report the existing
+  deal (name, deal_id, URL) and apply any new terms via update_deal on
+  that deal_id instead.
+
 == NEVER DO THESE ==
 - Use a company Pipeline record ID as a security entry ID — always use get_security_ids
 - Call search_leads_cache during an update task
