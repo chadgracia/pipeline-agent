@@ -17,3 +17,4 @@ jobs:
       - run: |
           zip -j function.zip lambda_function.py
           aws lambda update-function-code --function-name pipeline-agent --zip-file fileb://function.zip
+          aws s3 cp agent-system-prompt.txt s3://pipeline-token/agent-system-prompt.txt --content-type text/plain
