@@ -1367,6 +1367,46 @@ def _execute_tool_inner(tool_name, tool_input):
             return {"error": str(e), "url": url}
 
     elif tool_name == "create_deal":
+        # Live duplicate-deal guard — the deals.json snapshot is hourly and can miss recent deals.
+        try:
+            company_id = int(tool_input["company_id"])
+            primary_contact_id = int(tool_input["primary_contact_id"])
+            matches = []
+            page = 1
+            pages = 1
+            while page <= pages:
+                result = call_pipeline_api("GET", f"/deals.json?conditions[company_id]={company_id}&per_page=200&page={page}")
+                if result["status"] != 200:
+                    logger.warning(f"create_deal: duplicate check got HTTP {result['status']}, proceeding with creation")
+                    matches = []
+                    break
+                data = result["data"]
+                pages = data.get("pagination", {}).get("pages", 1)
+                for d in data.get("deals", data.get("data", [])):
+                    if d.get("primary_contact_id") != primary_contact_id:
+                        continue
+                    if d.get("is_archived"):
+                        continue
+                    if d.get("deal_stage_id") == 2348038:  # Obsolete
+                        continue
+                    matches.append(d)
+                page += 1
+            if matches:
+                existing = matches[0]
+                existing_name = existing.get("name")
+                existing_stage = (existing.get("deal_stage") or {}).get("name")
+                existing_id = existing.get("id")
+                return {
+                    "error": "DUPLICATE_DEAL",
+                    "message": f"A deal already exists for this person and company: '{existing_name}' (deal_id {existing_id}, stage {existing_stage}). Do NOT create another deal. Use update_deal on the existing deal if the terms changed.",
+                    "existing_deal_id": existing_id,
+                    "existing_deal_name": existing_name,
+                    "existing_deal_stage": existing_stage,
+                    "url": f"https://app.pipelinecrm.com/deals/{existing_id}"
+                }
+        except Exception as e:
+            logger.warning(f"create_deal: duplicate check failed, proceeding with creation: {e}")
+
         type_map      = _DEAL_FIELDS["deal_type"]["values"]
         structure_map = _DEAL_FIELDS["structure"]["values"]
         class_map     = _DEAL_FIELDS["class"]["values"]
