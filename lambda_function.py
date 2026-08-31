@@ -671,11 +671,12 @@ def _execute_tool_inner(tool_name, tool_input):
         if email:
             new_email = email.lower().strip()
             dup = None
-            # Live check — catches very recent records matched on the PRIMARY email field
-            check = call_pipeline_api("GET", f"/people.json?conditions[email]={urllib.parse.quote(email)}&per_page=5")
+            # Live check — catches very recent records, matched against any of the three email slots
+            check = call_pipeline_api("GET", f"/people.json?conditions[person_email]={urllib.parse.quote(email)}&per_page=10")
             if check["status"] == 200 and check["data"].get("entries"):
                 for existing in check["data"]["entries"]:
-                    if (existing.get("email") or "").lower().strip() == new_email:
+                    slots = {(existing.get(f) or "").lower().strip() for f in ("email", "email2", "home_email")}
+                    if new_email in slots:
                         dup = existing
                         break
             # Snapshot check — catches the address living in ANY email slot (email / email2 / home_email)
