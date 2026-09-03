@@ -327,7 +327,7 @@ TOOL_SPECS = [
         "toolSpec": {
             "name": "add_security",
             "description": "Add a NEW security as a dropdown entry in the person Buy, Sell, and Holding interest fields. ONLY call this when Chad explicitly instructs you to add a new tracked security. NEVER call it automatically while processing emails or forms. Checks for near-duplicate names first and refuses if one exists.",
-            "inputSchema": {"json": {"type": "object", "properties": {"security_name": {"type": "string", "description": "Exact security name to create, e.g. 'Moonshot AI'"}}, "required": ["security_name"]}}
+            "inputSchema": {"json": {"type": "object", "properties": {"security_name": {"type": "string", "description": "Exact security name to create, e.g. 'Moonshot AI'"}, "force": {"type": "boolean", "description": "Bypass the near-duplicate guard. Set true ONLY when Chad has explicitly confirmed the name is a different security (e.g. said 'override duplicate check'). Always disclose the bypassed match in your reply."}}, "required": ["security_name"]}}
         }
     },
     {
@@ -965,9 +965,28 @@ def _execute_tool_inner(tool_name, tool_input):
         def _norm(s):
             return s.lower().rstrip("$#").strip()
         target = _norm(name)
-        near = [k for k in SECURITY_IDS if _norm(k) == target or target in _norm(k) or _norm(k) in target]
-        if near:
-            return {"error": f"Refusing to create '{name}': near-match already exists", "existing": near[:5], "hint": "Use get_security_ids with the existing name, or confirm with Chad this is genuinely a different security."}
+        force = bool(tool_input.get("force"))
+        STOP_TOKENS = {"ai", "inc", "labs", "lab", "the", "co", "corp", "llc", "ltd", "tech", "technologies", "group", "holdings", "company", "capital"}
+        def _tokens(s):
+            return {t for t in re.split(r"[^a-z0-9]+", _norm(s)) if t and t not in STOP_TOKENS}
+        def _edit_dist(a, b, cap=3):
+            if abs(len(a) - len(b)) > cap - 1:
+                return cap
+            prev = list(range(len(b) + 1))
+            for i, ca in enumerate(a, 1):
+                cur = [i]
+                for j, cb in enumerate(b, 1):
+                    cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+                prev = cur
+            return prev[-1]
+        t_tokens = _tokens(name)
+        near = []
+        for k in SECURITY_IDS:
+            kn = _norm(k)
+            if kn == target or (t_tokens and t_tokens & _tokens(k)) or (min(len(kn), len(target)) >= 5 and _edit_dist(kn, target) <= 2):
+                near.append(k)
+        if near and not force:
+            return {"error": f"Refusing to create '{name}': near-match already exists", "existing": near[:5], "hint": "Use get_security_ids with the existing name. If Chad explicitly confirms this is a different security (says 'override duplicate check'), retry with force: true and disclose the bypassed match in your reply."}
         field_roles = {3322093: "b", 3759156: "s", 3740611: "h"}
         created = {"h": None, "b": None, "s": None}
         errors = []
