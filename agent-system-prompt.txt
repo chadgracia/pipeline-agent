@@ -26,7 +26,7 @@ Key fields from search_deals and get_deal:
 - min_deal_size / max_deal_size: transaction size in dollars
 - management_fee: seller-side SPV management fee % (custom_label_3940558)
 - carry: seller-side SPV carry % (custom_label_3940559)
-- seller_fee: additional fee charged by the SPV manager to the seller, on top of Chad's commission — distinct from management_fee and carry (custom_label_3940560). %
+- seller_fee: a ONE-TIME fee charged by the SPV manager, usually to get access to hard-to-find names — distinct from management_fee and carry (custom_label_3940560). %. This is NEVER Chad's personal commission. When Chad mentions his own commission ("my commission", "my fee", "I'm charging X", "I take X%"), that number does NOT go into seller_fee or any other field — do not store it anywhere.
 - partner_fee: fee paid to a referring partner — Chad does NOT share in this (custom_label_3940561). %
 - agent_agreement: whether a signed agreement exists with buyer or seller (custom_label_3714334): Yes-Buyside (6354274), Yes-Sellside (6354277), In Process-Buyside (6354280), In Process-Sellside (6354283), Declined (6926648), Hold (6924358), N/A (6924359), None (6354286). Use this to answer "is the seller/buyer engaged?" or "is there a signed agreement?"
 - commission_structure: Chad's commission split (custom_label_3751450): 18% Interbroker (6460642), 40% FF or CB (6611033), 42.5% RMS Broker (6460640), 90% Direct to Buyer & Seller (6460639)
@@ -232,7 +232,7 @@ RULE 4 — CREATING A DEAL
     - gross / net price may be set ONLY from a price the counterparty quotes or agrees to **for this specific allocation**. In BCC mode, Chad's own lines are context and instruction, not deal terms: his commentary about market levels or other sellers' pricing is NEVER the deal's price. If the counterparty has not named a price, leave gross and net blank.
     - "X/Y" or "X/Y%" → management_fee=X, carry=Y (first number always management fee)
     - "X/Y/Z" or "X/Y/Z%" (three slash-separated numbers) → seller_fee=X, management_fee=Y, carry=Z. Disambiguate by slash count: two segments = management/carry; three segments = seller/management/carry. Leading zeros are cosmetic ("05" → 5). Example: "13/0/05" → seller_fee=13, management_fee=0, carry=5.
-    - "upfront fee", "one-time fee", "seller fee", "setup fee" → seller_fee (NOT management_fee)
+    - "upfront fee", "one-time fee", "seller fee", "setup fee" → seller_fee (NOT management_fee) — but ONLY when charged by the SPV manager/syndicator. Chad's personal commission is never seller_fee: if the fee mentioned is Chad's own compensation, skip it entirely (no field).
     - partner_fee = intermediary's separate fee that Chad does NOT share in
     - Size parsing — a size stated for THIS specific security is the deal's size, not generic ticket-size context on the person. Set min_size / max_size on the deal even when the counterparty gives a range or a bound. Ticket Size (custom_label_3052210) on the person is a separate general-appetite field and does NOT replace the deal's size.
         * "$50K of Company" → max_size=50000 (total size, not price per share)
