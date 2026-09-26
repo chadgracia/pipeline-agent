@@ -5,6 +5,7 @@ import urllib.error
 import urllib.parse
 import logging
 import re
+import time
 from datetime import date
 
 HIIVE_ASK_FIELD       = "custom_label_3997297"
@@ -189,6 +190,147 @@ def call_pipeline_api(method, endpoint, payload=None):
         return {"status": e.code, "data": err_data}
     except Exception as e:
         return {"status": 500, "data": str(e)}
+
+# ── Google Drive (client folders) ─────────────────────────────────────────────
+DRIVE_CLIENTS_FOLDER_ID = "15tJGEiOe4eKszNHDLrm5wG_8C6Icn5wo"
+DRIVE_CREDS_BUCKET      = "pipeline-token"
+DRIVE_CREDS_KEY         = "google-drive-oauth.json"
+DRIVE_FILES_URL         = "https://www.googleapis.com/drive/v3/files"
+
+_drive_creds = None
+_drive_token = {"access_token": None, "expires_at": 0}
+
+def _drive_access_token():
+    global _drive_creds
+    if _drive_token["access_token"] and time.time() < _drive_token["expires_at"]:
+        return _drive_token["access_token"]
+    if _drive_creds is None:
+        s3 = boto3.client('s3')
+        obj = s3.get_object(Bucket=DRIVE_CREDS_BUCKET, Key=DRIVE_CREDS_KEY)
+        _drive_creds = json.loads(obj['Body'].read())
+    body = urllib.parse.urlencode({
+        "client_id": _drive_creds["client_id"],
+        "client_secret": _drive_creds["client_secret"],
+        "refresh_token": _drive_creds["refresh_token"],
+        "grant_type": "refresh_token",
+    }).encode()
+    req = urllib.request.Request("https://oauth2.googleapis.com/token", data=body,
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        tok = json.loads(resp.read().decode())
+    _drive_token["access_token"] = tok["access_token"]
+    _drive_token["expires_at"] = time.time() + int(tok.get("expires_in", 3600)) - 60
+    return _drive_token["access_token"]
+
+def _drive_request(method, url, params=None, payload=None, _retried=False):
+    """Returns {"status", "data"}. Never raises. Retries once on 401 with a fresh token."""
+    try:
+        token = _drive_access_token()
+    except urllib.error.HTTPError as e:
+        try:
+            err = e.read().decode()
+        except Exception:
+            err = str(e)
+        return {"status": e.code, "data": f"OAuth token refresh failed: {err}"}
+    except Exception as e:
+        return {"status": 500, "data": f"OAuth token refresh failed: {e}"}
+    full_url = f"{url}?{urllib.parse.urlencode(params)}" if params else url
+    headers = {"Authorization": f"Bearer {token}"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(full_url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return {"status": resp.status, "data": json.loads(resp.read().decode())}
+    except urllib.error.HTTPError as e:
+        if e.code == 401 and not _retried:
+            _drive_token["access_token"] = None
+            _drive_token["expires_at"] = 0
+            return _drive_request(method, url, params, payload, _retried=True)
+        try:
+            err = e.read().decode()
+        except Exception:
+            err = str(e)
+        return {"status": e.code, "data": err}
+    except Exception as e:
+        return {"status": 500, "data": str(e)}
+
+def _list_client_folders():
+    """Live listing of all folders directly under CLIENTS. Returns (folders, error_result)."""
+    q = (f"'{DRIVE_CLIENTS_FOLDER_ID}' in parents and "
+         "mimeType='application/vnd.google-apps.folder' and trashed=false")
+    folders, page_token = [], None
+    while True:
+        params = {"q": q, "fields": "nextPageToken,files(id,name)", "pageSize": 1000}
+        if page_token:
+            params["pageToken"] = page_token
+        r = _drive_request("GET", DRIVE_FILES_URL, params=params)
+        if r["status"] != 200 or not isinstance(r["data"], dict):
+            return None, r
+        folders.extend(r["data"].get("files", []))
+        page_token = r["data"].get("nextPageToken")
+        if not page_token:
+            return folders, None
+
+_ENTITY_SUFFIXES = {"llc", "inc", "incorporated", "ltd", "limited", "lp", "llp",
+                    "corp", "corporation", "co", "gmbh", "sa", "ag", "plc"}
+
+def _norm_folder_name(name):
+    s = (name or "").lower()
+    s = re.sub(r"[^\w\s]", "", s)   # "l.l.c." -> "llc"
+    tokens = s.split()
+    while len(tokens) > 1 and tokens[-1] in _ENTITY_SUFFIXES:
+        tokens.pop()
+    return " ".join(tokens)
+
+def _person_folder_name(name):
+    name = " ".join((name or "").split())
+    if "," in name:
+        return name
+    parts = name.split(" ")
+    if len(parts) < 2:
+        return name
+    return f"{parts[-1]}, {' '.join(parts[:-1])}"
+
+def _folder_result(status, f):
+    return {"status": status, "folder_id": f["id"], "name": f["name"],
+            "url": f"https://drive.google.com/drive/folders/{f['id']}"}
+
+def ensure_client_folder(client_name, client_type, create_if_missing=True):
+    client_name = " ".join((client_name or "").split())
+    if not client_name:
+        return {"status": "error", "http_status": None, "body": "client_name is required"}
+    if client_type not in ("entity", "person"):
+        return {"status": "error", "http_status": None, "body": "client_type must be 'entity' or 'person'"}
+    folders, err = _list_client_folders()
+    if err:
+        return {"status": "error", "http_status": err["status"], "body": err["data"]}
+    target = _norm_folder_name(client_name)
+    target_tokens = set(target.split())
+    matches = []
+    for f in folders:
+        n = _norm_folder_name(f.get("name"))
+        if n == target or (client_type == "person" and set(n.split()) == target_tokens):
+            matches.append(f)
+    if len(matches) > 1:
+        return {"status": "ambiguous",
+                "folders": [{k: v for k, v in _folder_result("", f).items() if k != "status"} for f in matches]}
+    if matches:
+        return _folder_result("exists", matches[0])
+    if not create_if_missing:
+        return {"status": "not_found", "searched_name": client_name}
+    new_name = client_name if client_type == "entity" else _person_folder_name(client_name)
+    r = _drive_request("POST", DRIVE_FILES_URL, params={"fields": "id,name"}, payload={
+        "name": new_name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [DRIVE_CLIENTS_FOLDER_ID],
+    })
+    if r["status"] != 200 or not isinstance(r["data"], dict):
+        return {"status": "error", "http_status": r["status"], "body": r["data"]}
+    return _folder_result("created", r["data"])
+
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 TOOL_SPECS = [
@@ -458,6 +600,17 @@ TOOL_SPECS = [
                 "security_name": {"type": "string", "description": "Security name e.g. Kraken, Ayar Labs, SpaceX"},
                 "interest_type": {"type": "string", "description": "One of: holding, buying, selling"}
             }, "required": ["security_name", "interest_type"]}}
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "ensure_client_folder",
+            "description": "Find or create the client's Google Drive folder inside Chad's CLIENTS folder. Only call when Chad explicitly asks to create/find/set up a client or Drive folder. Lists folders live (never cached). Returns status 'exists' or 'created' with folder_id, name, url; 'ambiguous' with a list of matching folders (nothing created); 'not_found' if create_if_missing is false and no match; or 'error' with http_status and body.",
+            "inputSchema": {"json": {"type": "object", "properties": {
+                "client_name": {"type": "string", "description": "Full legal entity name exactly as known (e.g. 'Acme Capital Partners LLC'), or the person's name ('First Last' or 'Last, First')"},
+                "client_type": {"type": "string", "enum": ["entity", "person"], "description": "'entity' for a legal entity (folder named exactly as given); 'person' for a natural person (folder named 'Last, First')"},
+                "create_if_missing": {"type": "boolean", "description": "Create the folder if no match exists. Default true."}
+            }, "required": ["client_name", "client_type"]}}
         }
     }
 ]
@@ -1676,6 +1829,15 @@ def _execute_tool_inner(tool_name, tool_input):
                     "id": p.get("id")
                 })
         return {"total": len(matches), "leads": matches}
+
+    elif tool_name == "ensure_client_folder":
+        result = ensure_client_folder(
+            tool_input.get("client_name", ""),
+            tool_input.get("client_type", ""),
+            tool_input.get("create_if_missing", True),
+        )
+        logger.info(f"ensure_client_folder: {json.dumps(result)}")
+        return result
 
     return {"error": f"Unknown tool: {tool_name}"}
 
