@@ -5,6 +5,7 @@ import urllib.error
 import urllib.parse
 import logging
 import re
+import os
 import time
 from datetime import date
 
@@ -222,8 +223,9 @@ def _drive_access_token():
     _drive_token["expires_at"] = time.time() + int(tok.get("expires_in", 3600)) - 60
     return _drive_token["access_token"]
 
-def _drive_request(method, url, params=None, payload=None, _retried=False):
-    """Returns {"status", "data"}. Never raises. Retries once on 401 with a fresh token."""
+def _drive_raw(method, url, params=None, body=None, headers=None, _retried=False):
+    """Low-level Drive call. Returns {"status", "data", "headers"}; data is parsed JSON when possible.
+    Never raises. Retries once on 401 with a fresh token."""
     try:
         token = _drive_access_token()
     except urllib.error.HTTPError as e:
@@ -231,59 +233,83 @@ def _drive_request(method, url, params=None, payload=None, _retried=False):
             err = e.read().decode()
         except Exception:
             err = str(e)
-        return {"status": e.code, "data": f"OAuth token refresh failed: {err}"}
+        return {"status": e.code, "data": f"OAuth token refresh failed: {err}", "headers": {}}
     except Exception as e:
-        return {"status": 500, "data": f"OAuth token refresh failed: {e}"}
+        return {"status": 500, "data": f"OAuth token refresh failed: {e}", "headers": {}}
     full_url = f"{url}?{urllib.parse.urlencode(params)}" if params else url
-    headers = {"Authorization": f"Bearer {token}"}
-    data = None
-    if payload is not None:
-        data = json.dumps(payload).encode()
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(full_url, data=data, headers=headers, method=method)
+    hdrs = dict(headers or {})
+    hdrs["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(full_url, data=body, headers=hdrs, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return {"status": resp.status, "data": json.loads(resp.read().decode())}
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw = resp.read().decode()
+            try:
+                data = json.loads(raw) if raw else {}
+            except ValueError:
+                data = raw
+            return {"status": resp.status, "data": data, "headers": dict(resp.headers)}
     except urllib.error.HTTPError as e:
         if e.code == 401 and not _retried:
             _drive_token["access_token"] = None
             _drive_token["expires_at"] = 0
-            return _drive_request(method, url, params, payload, _retried=True)
+            return _drive_raw(method, url, params, body, headers, _retried=True)
         try:
             err = e.read().decode()
         except Exception:
             err = str(e)
-        return {"status": e.code, "data": err}
+        return {"status": e.code, "data": err, "headers": {}}
     except Exception as e:
-        return {"status": 500, "data": str(e)}
+        return {"status": 500, "data": str(e), "headers": {}}
 
-def _list_client_folders():
-    """Live listing of all folders directly under CLIENTS. Returns (folders, error_result)."""
-    q = (f"'{DRIVE_CLIENTS_FOLDER_ID}' in parents and "
-         "mimeType='application/vnd.google-apps.folder' and trashed=false")
-    folders, page_token = [], None
+def _drive_request(method, url, params=None, payload=None):
+    """JSON Drive call. Returns {"status", "data"}. Never raises."""
+    body, headers = None, {}
+    if payload is not None:
+        body = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/json"
+    r = _drive_raw(method, url, params=params, body=body, headers=headers)
+    return {"status": r["status"], "data": r["data"]}
+
+def _drive_list(q, fields="nextPageToken,files(id,name)"):
+    """Live, paginated files.list. Returns (files, error_result)."""
+    files, page_token = [], None
     while True:
-        params = {"q": q, "fields": "nextPageToken,files(id,name)", "pageSize": 1000}
+        params = {"q": q, "fields": fields, "pageSize": 1000}
         if page_token:
             params["pageToken"] = page_token
         r = _drive_request("GET", DRIVE_FILES_URL, params=params)
         if r["status"] != 200 or not isinstance(r["data"], dict):
             return None, r
-        folders.extend(r["data"].get("files", []))
+        files.extend(r["data"].get("files", []))
         page_token = r["data"].get("nextPageToken")
         if not page_token:
-            return folders, None
+            return files, None
+
+def _list_client_folders():
+    """Live listing of all folders directly under CLIENTS. Returns (folders, error_result)."""
+    return _drive_list(f"'{DRIVE_CLIENTS_FOLDER_ID}' in parents and "
+                       "mimeType='application/vnd.google-apps.folder' and trashed=false")
+
+def _list_folder_files(folder_id):
+    """Live listing of non-trashed, non-folder files directly in folder_id. Returns (files, error_result)."""
+    return _drive_list(f"'{folder_id}' in parents and trashed=false and "
+                       "mimeType!='application/vnd.google-apps.folder'",
+                       fields="nextPageToken,files(id,name,mimeType)")
 
 _ENTITY_SUFFIXES = {"llc", "inc", "incorporated", "ltd", "limited", "lp", "llp",
                     "corp", "corporation", "co", "gmbh", "sa", "ag", "plc"}
 
-def _norm_folder_name(name):
+def _folder_tokens(name, drop_suffixes=True):
     s = (name or "").lower()
-    s = re.sub(r"[^\w\s]", "", s)   # "l.l.c." -> "llc"
+    s = re.sub(r"[-‐‑‒–—/]", " ", s)   # dashes/slashes separate words
+    s = re.sub(r"[^\w\s]", "", s)      # other punctuation dropped: "l.l.c." -> "llc"
     tokens = s.split()
-    while len(tokens) > 1 and tokens[-1] in _ENTITY_SUFFIXES:
+    while drop_suffixes and len(tokens) > 1 and tokens[-1] in _ENTITY_SUFFIXES:
         tokens.pop()
-    return " ".join(tokens)
+    return tokens
+
+def _norm_folder_name(name):
+    return " ".join(_folder_tokens(name))
 
 def _person_folder_name(name):
     name = " ".join((name or "").split())
@@ -298,6 +324,30 @@ def _folder_result(status, f):
     return {"status": status, "folder_id": f["id"], "name": f["name"],
             "url": f"https://drive.google.com/drive/folders/{f['id']}"}
 
+def _match_client_folders(client_name, client_type, folders):
+    """Tiered matching; returns the matches from the first tier that yields any.
+    1) normalized names equal  2) token sets equal (persons)  3) query tokens are a prefix of the folder's tokens."""
+    target = _folder_tokens(client_name)
+    if not target:
+        return []
+    normed = [(f, _folder_tokens(f.get("name"))) for f in folders]
+    tier1 = [f for f, t in normed if t == target]
+    if tier1:
+        return tier1
+    if client_type == "person":
+        tier2 = [f for f, t in normed if set(t) == set(target)]
+        if tier2:
+            return tier2
+    prefixes = [target]
+    if client_type == "person" and "," not in client_name and len(target) > 1:
+        prefixes.append([target[-1]] + target[:-1])   # "marc meunier" -> also "meunier marc"
+    tier3 = []
+    for f in folders:
+        t = _folder_tokens(f.get("name"), drop_suffixes=False)
+        if any(t[:len(pre)] == pre for pre in prefixes):
+            tier3.append(f)
+    return tier3
+
 def ensure_client_folder(client_name, client_type, create_if_missing=True):
     client_name = " ".join((client_name or "").split())
     if not client_name:
@@ -307,13 +357,7 @@ def ensure_client_folder(client_name, client_type, create_if_missing=True):
     folders, err = _list_client_folders()
     if err:
         return {"status": "error", "http_status": err["status"], "body": err["data"]}
-    target = _norm_folder_name(client_name)
-    target_tokens = set(target.split())
-    matches = []
-    for f in folders:
-        n = _norm_folder_name(f.get("name"))
-        if n == target or (client_type == "person" and set(n.split()) == target_tokens):
-            matches.append(f)
+    matches = _match_client_folders(client_name, client_type, folders)
     if len(matches) > 1:
         return {"status": "ambiguous",
                 "folders": [{k: v for k, v in _folder_result("", f).items() if k != "status"} for f in matches]}
@@ -331,6 +375,133 @@ def ensure_client_folder(client_name, client_type, create_if_missing=True):
         return {"status": "error", "http_status": r["status"], "body": r["data"]}
     return _folder_result("created", r["data"])
 
+# ── Drive file upload / rename ────────────────────────────────────────────────
+DRIVE_UPLOAD_URL         = "https://www.googleapis.com/upload/drive/v3/files"
+DRIVE_MULTIPART_MAX      = 5 * 1024 * 1024
+
+# Attachments of the email being processed. Reset at the start of every invocation;
+# bytes are only reachable by tools, never sent to the model.
+_CURRENT_ATTACHMENTS = []
+
+def _fmt_size(n):
+    return f"{max(1, round(n / 1024))} KB" if n < 1024 * 1024 else f"{n / (1024 * 1024):.1f} MB"
+
+def _file_url(file_id):
+    return f"https://drive.google.com/file/d/{file_id}/view"
+
+def _split_ext(name):
+    stem, dot, ext = name.rpartition(".")
+    if not dot or not stem or " " in ext or len(ext) > 10:
+        return name, ""
+    return stem, "." + ext
+
+def _unique_name(name, taken):
+    if name not in taken:
+        return name, False
+    stem, ext = _split_ext(name)
+    n = 2
+    while f"{stem} ({n}){ext}" in taken:
+        n += 1
+    return f"{stem} ({n}){ext}", True
+
+def _drive_upload(folder_id, name, mime, data):
+    """Upload bytes into folder_id. Returns {"status", "data"}; data has id,name on success."""
+    meta = json.dumps({"name": name, "parents": [folder_id]}).encode()
+    if len(data) <= DRIVE_MULTIPART_MAX:
+        boundary = "pipelineagent" + os.urandom(12).hex()
+        body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n").encode() + meta + \
+               (f"\r\n--{boundary}\r\nContent-Type: {mime}\r\n\r\n").encode() + data + \
+               (f"\r\n--{boundary}--\r\n").encode()
+        return _drive_raw("POST", DRIVE_UPLOAD_URL,
+                          params={"uploadType": "multipart", "fields": "id,name"}, body=body,
+                          headers={"Content-Type": f"multipart/related; boundary={boundary}"})
+    start = _drive_raw("POST", DRIVE_UPLOAD_URL,
+                       params={"uploadType": "resumable", "fields": "id,name"}, body=meta,
+                       headers={"Content-Type": "application/json; charset=UTF-8",
+                                "X-Upload-Content-Type": mime,
+                                "X-Upload-Content-Length": str(len(data))})
+    session_url = {k.lower(): v for k, v in start.get("headers", {}).items()}.get("location")
+    if start["status"] != 200 or not session_url:
+        return start
+    return _drive_raw("PUT", session_url, body=data,
+                      headers={"Content-Type": mime, "Content-Length": str(len(data))})
+
+def upload_to_client_folder(client_name, client_type, attachment_indexes=None, create_if_missing=True):
+    atts = list(_CURRENT_ATTACHMENTS)
+    if not atts:
+        return {"status": "no_attachments", "message": "This email has no attachments to file."}
+    folder = ensure_client_folder(client_name, client_type, create_if_missing)
+    if folder.get("status") not in ("exists", "created"):
+        return folder
+    errors = []
+    if attachment_indexes:
+        by_index = {a["index"]: a for a in atts}
+        selected = []
+        for i in attachment_indexes:
+            try:
+                i = int(i)
+            except (TypeError, ValueError):
+                errors.append({"index": i, "error": "invalid attachment index"})
+                continue
+            if i in by_index:
+                selected.append(by_index[i])
+            else:
+                errors.append({"index": i, "error": f"no attachment #{i} (email has {len(atts)})"})
+    else:
+        selected = atts
+    existing, err = _list_folder_files(folder["folder_id"])
+    if err:
+        return {"status": "error", "http_status": err["status"], "body": err["data"], "folder": folder}
+    taken = {f["name"] for f in existing}
+    files = []
+    for a in selected:
+        name, renamed = _unique_name(a["filename"], taken)
+        r = _drive_upload(folder["folder_id"], name, a["mime"], a["data"])
+        if r["status"] in (200, 201) and isinstance(r["data"], dict) and r["data"].get("id"):
+            taken.add(r["data"].get("name", name))
+            files.append({"index": a["index"], "name": r["data"].get("name", name), "file_id": r["data"]["id"],
+                          "url": _file_url(r["data"]["id"]), "renamed_due_to_duplicate": renamed})
+        else:
+            errors.append({"index": a["index"], "name": a["filename"], "http_status": r["status"], "body": r["data"]})
+    return {"status": "uploaded" if files else "error", "folder": folder, "files": files, "errors": errors}
+
+def rename_drive_file(new_name, file_id=None, current_name=None, client_name=None, client_type=None):
+    new_name = (new_name or "").strip()
+    if not new_name:
+        return {"status": "error", "http_status": None, "body": "new_name is required"}
+    if file_id:
+        r = _drive_request("GET", f"{DRIVE_FILES_URL}/{file_id}", params={"fields": "id,name"})
+        if r["status"] != 200 or not isinstance(r["data"], dict):
+            return {"status": "error", "http_status": r["status"], "body": r["data"]}
+        target = r["data"]
+    else:
+        if not current_name or not client_name or not client_type:
+            return {"status": "error", "http_status": None,
+                    "body": "Provide file_id, or current_name with client_name and client_type"}
+        folder = ensure_client_folder(client_name, client_type, create_if_missing=False)
+        if folder.get("status") != "exists":
+            return folder
+        files, err = _list_folder_files(folder["folder_id"])
+        if err:
+            return {"status": "error", "http_status": err["status"], "body": err["data"], "folder": folder}
+        q = current_name.strip().lower()
+        matches = [f for f in files if f["name"].lower() == q] or [f for f in files if q in f["name"].lower()]
+        if not matches:
+            return {"status": "not_found", "current_name": current_name, "folder": folder}
+        if len(matches) > 1:
+            return {"status": "ambiguous", "folder": folder,
+                    "files": [{"file_id": f["id"], "name": f["name"], "url": _file_url(f["id"])} for f in matches]}
+        target = matches[0]
+    old_name = target["name"]
+    old_ext = _split_ext(old_name)[1]
+    if old_ext and not _split_ext(new_name)[1]:
+        new_name += old_ext
+    r = _drive_request("PATCH", f"{DRIVE_FILES_URL}/{target['id']}", params={"fields": "id,name"},
+                       payload={"name": new_name})
+    if r["status"] != 200 or not isinstance(r["data"], dict):
+        return {"status": "error", "http_status": r["status"], "body": r["data"]}
+    return {"status": "renamed", "file_id": target["id"], "old_name": old_name,
+            "new_name": r["data"].get("name", new_name), "url": _file_url(target["id"])}
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 TOOL_SPECS = [
@@ -611,6 +782,31 @@ TOOL_SPECS = [
                 "client_type": {"type": "string", "enum": ["entity", "person"], "description": "'entity' for a legal entity (folder named exactly as given); 'person' for a natural person (folder named 'Last, First')"},
                 "create_if_missing": {"type": "boolean", "description": "Create the folder if no match exists. Default true."}
             }, "required": ["client_name", "client_type"]}}
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "upload_to_client_folder",
+            "description": "File attachments from the current email into a client's Google Drive folder (resolved like ensure_client_folder; partial entity names match by prefix). Only call when Chad explicitly asks to add/file/save documents. Uploads original bytes and filenames; never overwrites — a name clash is uploaded as 'name (2).ext' and flagged. Returns status 'uploaded' with folder, files [{index, name, file_id, url, renamed_due_to_duplicate}] and errors; or the folder status 'ambiguous' / 'not_found' / 'error' (nothing uploaded); or 'no_attachments'.",
+            "inputSchema": {"json": {"type": "object", "properties": {
+                "client_name": {"type": "string", "description": "Legal entity name (full or leading part, e.g. 'Preface Ventures'), or the person's name ('First Last' or 'Last, First')"},
+                "client_type": {"type": "string", "enum": ["entity", "person"], "description": "'entity' for a company folder; 'person' for a natural person's personal folder"},
+                "attachment_indexes": {"type": "array", "items": {"type": "integer"}, "description": "1-based indexes from the email's attachment inventory. Empty or omitted = all attachments."},
+                "create_if_missing": {"type": "boolean", "description": "Create the client folder if no match exists. Default true."}
+            }, "required": ["client_name", "client_type"]}}
+        }
+    },
+    {
+        "toolSpec": {
+            "name": "rename_drive_file",
+            "description": "Rename a file in a client's Google Drive folder. Give file_id to rename directly, or client_name + client_type + current_name to find it (case-insensitive: exact match first, then contains). Keeps the original extension if new_name has none. Returns status 'renamed' with file_id, old_name, new_name, url; 'ambiguous' with the matching files; 'not_found'; or 'error' with http_status and body.",
+            "inputSchema": {"json": {"type": "object", "properties": {
+                "client_name": {"type": "string", "description": "Client folder name (entity or person), required unless file_id is given"},
+                "client_type": {"type": "string", "enum": ["entity", "person"], "description": "Required unless file_id is given"},
+                "current_name": {"type": "string", "description": "Current file name or a distinctive part of it"},
+                "file_id": {"type": "string", "description": "Drive file ID; if given, client_name/current_name are not needed"},
+                "new_name": {"type": "string", "description": "New file name"}
+            }, "required": ["new_name"]}}
         }
     }
 ]
@@ -1839,6 +2035,27 @@ def _execute_tool_inner(tool_name, tool_input):
         logger.info(f"ensure_client_folder: {json.dumps(result)}")
         return result
 
+    elif tool_name == "upload_to_client_folder":
+        result = upload_to_client_folder(
+            tool_input.get("client_name", ""),
+            tool_input.get("client_type", ""),
+            tool_input.get("attachment_indexes") or None,
+            tool_input.get("create_if_missing", True),
+        )
+        logger.info(f"upload_to_client_folder: {json.dumps(result, default=str)}")
+        return result
+
+    elif tool_name == "rename_drive_file":
+        result = rename_drive_file(
+            tool_input.get("new_name", ""),
+            file_id=tool_input.get("file_id"),
+            current_name=tool_input.get("current_name"),
+            client_name=tool_input.get("client_name"),
+            client_type=tool_input.get("client_type"),
+        )
+        logger.info(f"rename_drive_file: {json.dumps(result, default=str)}")
+        return result
+
     return {"error": f"Unknown tool: {tool_name}"}
 
 # ── Agentic loop ──────────────────────────────────────────────────────────────
@@ -1929,6 +2146,8 @@ def send_reply(to_address, subject, body_text):
 # ── Main handler ──────────────────────────────────────────────────────────────
 def lambda_handler(event, context):
     logger.info(f"Event: {json.dumps(event)}")
+    global _CURRENT_ATTACHMENTS
+    _CURRENT_ATTACHMENTS = []
 
     # Manual test invocation
     if 'instruction' in event:
@@ -1952,18 +2171,32 @@ def lambda_handler(event, context):
             from_address = from_address.split('<')[1].rstrip('>')
 
         import email as email_lib
+        import email.header
         message_id = ses_record['mail']['messageId']
         s3 = boto3.client('s3')
         obj = s3.get_object(Bucket='gracia-agent-inbox', Key=message_id)
-        raw_email = obj['Body'].read().decode('utf-8', errors='replace')
+        raw_email = obj['Body'].read()
 
-        # Parse email body and PDF attachments
-        msg = email_lib.message_from_string(raw_email)
+        # Parse email body and PDF attachments (bytes parser so attachment payloads stay byte-exact)
+        msg = email_lib.message_from_bytes(raw_email)
         text_body = ''
         attachments = []
+        raw_attachments = []
         if msg.is_multipart():
             for part in msg.walk():
                 content_type = part.get_content_type()
+                raw_name = part.get_filename()
+                if raw_name:
+                    part_bytes = part.get_payload(decode=True) or b''
+                    is_inline_logo = (content_type.startswith('image/') and part.get('Content-ID')
+                                      and len(part_bytes) < 100 * 1024)
+                    if part_bytes and not is_inline_logo:
+                        try:
+                            orig_name = str(email_lib.header.make_header(email_lib.header.decode_header(raw_name)))
+                        except Exception:
+                            orig_name = raw_name
+                        raw_attachments.append({"index": len(raw_attachments) + 1, "filename": orig_name.strip(),
+                                                "mime": content_type, "data": part_bytes, "size": len(part_bytes)})
                 if content_type == 'text/plain' and not text_body:
                     payload = part.get_payload(decode=True)
                     if payload:
@@ -2068,6 +2301,12 @@ def lambda_handler(event, context):
         recipients = ", ".join(to_list + cc_list)
         bcc_context = f"[Chad sent this to: {recipients}]\n\n" if recipients else ""
         instruction = f"Subject: {subject}\n\n{bcc_context}{text_body.strip()}" if text_body.strip() else subject
+        _CURRENT_ATTACHMENTS = raw_attachments
+        if raw_attachments:
+            inventory = "; ".join(f"{a['index']}) {a['filename']} ({a['mime']}, {_fmt_size(a['size'])})"
+                                  for a in raw_attachments)
+            instruction = f"[Attachments on this email: {inventory}]\n\n{instruction}"
+            logger.info(f"Raw attachments: {[(a['index'], a['filename'], a['mime'], a['size']) for a in raw_attachments]}")
         logger.info(f"Email from: {from_address}, subject: {subject}, body length: {len(text_body)}, attachments: {len(attachments)}")
 
     except (KeyError, IndexError) as e:
