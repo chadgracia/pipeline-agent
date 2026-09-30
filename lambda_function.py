@@ -325,19 +325,21 @@ def _folder_result(status, f):
             "url": f"https://drive.google.com/drive/folders/{f['id']}"}
 
 def _match_client_folders(client_name, client_type, folders):
-    """Tiered matching; returns the matches from the first tier that yields any.
-    1) normalized names equal  2) token sets equal (persons)  3) query tokens are a prefix of the folder's tokens."""
+    """Tiered matching; returns (matches, near_matches) from the first tier that yields any.
+    1) normalized names equal  2) token sets equal (persons)  3) query tokens are a prefix of the folder's tokens
+    4) near match, only if 1-3 found nothing: folder tokens are a prefix of the query's, or token-set
+       Jaccard >= 0.6 with >= 2 shared tokens. Near matches are never treated as exists."""
     target = _folder_tokens(client_name)
     if not target:
-        return []
+        return [], []
     normed = [(f, _folder_tokens(f.get("name"))) for f in folders]
     tier1 = [f for f, t in normed if t == target]
     if tier1:
-        return tier1
+        return tier1, []
     if client_type == "person":
         tier2 = [f for f, t in normed if set(t) == set(target)]
         if tier2:
-            return tier2
+            return tier2, []
     prefixes = [target]
     if client_type == "person" and "," not in client_name and len(target) > 1:
         prefixes.append([target[-1]] + target[:-1])   # "marc meunier" -> also "meunier marc"
@@ -346,9 +348,18 @@ def _match_client_folders(client_name, client_type, folders):
         t = _folder_tokens(f.get("name"), drop_suffixes=False)
         if any(t[:len(pre)] == pre for pre in prefixes):
             tier3.append(f)
-    return tier3
+    if tier3:
+        return tier3, []
+    near = []
+    for f, t in normed:
+        if not t:
+            continue
+        shared = set(t) & set(target)
+        if target[:len(t)] == t or (len(shared) >= 2 and len(shared) / len(set(t) | set(target)) >= 0.6):
+            near.append(f)
+    return [], near
 
-def ensure_client_folder(client_name, client_type, create_if_missing=True):
+def ensure_client_folder(client_name, client_type, create_if_missing=True, create_new=False):
     client_name = " ".join((client_name or "").split())
     if not client_name:
         return {"status": "error", "http_status": None, "body": "client_name is required"}
@@ -357,13 +368,17 @@ def ensure_client_folder(client_name, client_type, create_if_missing=True):
     folders, err = _list_client_folders()
     if err:
         return {"status": "error", "http_status": err["status"], "body": err["data"]}
-    matches = _match_client_folders(client_name, client_type, folders)
+    matches, near = _match_client_folders(client_name, client_type, folders)
+    if near and not create_new:
+        # Similar-but-not-equal names (e.g. "Fund II LLC" vs "Fund"): never auto-pick or create; Chad decides.
+        return {"status": "ambiguous", "reason": "near_match", "searched_name": client_name,
+                "folders": [{k: v for k, v in _folder_result("", f).items() if k != "status"} for f in near]}
     if len(matches) > 1:
         return {"status": "ambiguous",
                 "folders": [{k: v for k, v in _folder_result("", f).items() if k != "status"} for f in matches]}
     if matches:
         return _folder_result("exists", matches[0])
-    if not create_if_missing:
+    if not create_if_missing and not create_new:
         return {"status": "not_found", "searched_name": client_name}
     new_name = client_name if client_type == "entity" else _person_folder_name(client_name)
     r = _drive_request("POST", DRIVE_FILES_URL, params={"fields": "id,name"}, payload={
@@ -382,6 +397,10 @@ DRIVE_MULTIPART_MAX      = 5 * 1024 * 1024
 # Attachments of the email being processed. Reset at the start of every invocation;
 # bytes are only reachable by tools, never sent to the model.
 _CURRENT_ATTACHMENTS = []
+
+def _clean_filename(name):
+    """Collapse whitespace runs (incl. CR/LF/tab left by folded MIME headers) to one space."""
+    return " ".join((name or "").split())
 
 def _fmt_size(n):
     return f"{max(1, round(n / 1024))} KB" if n < 1024 * 1024 else f"{n / (1024 * 1024):.1f} MB"
@@ -426,11 +445,12 @@ def _drive_upload(folder_id, name, mime, data):
     return _drive_raw("PUT", session_url, body=data,
                       headers={"Content-Type": mime, "Content-Length": str(len(data))})
 
-def upload_to_client_folder(client_name, client_type, attachment_indexes=None, create_if_missing=True):
+def upload_to_client_folder(client_name, client_type, attachment_indexes=None, create_if_missing=True,
+                            create_new=False):
     atts = list(_CURRENT_ATTACHMENTS)
     if not atts:
         return {"status": "no_attachments", "message": "This email has no attachments to file."}
-    folder = ensure_client_folder(client_name, client_type, create_if_missing)
+    folder = ensure_client_folder(client_name, client_type, create_if_missing, create_new)
     if folder.get("status") not in ("exists", "created"):
         return folder
     errors = []
@@ -466,7 +486,7 @@ def upload_to_client_folder(client_name, client_type, attachment_indexes=None, c
     return {"status": "uploaded" if files else "error", "folder": folder, "files": files, "errors": errors}
 
 def rename_drive_file(new_name, file_id=None, current_name=None, client_name=None, client_type=None):
-    new_name = (new_name or "").strip()
+    new_name = _clean_filename(new_name)
     if not new_name:
         return {"status": "error", "http_status": None, "body": "new_name is required"}
     if file_id:
@@ -776,23 +796,25 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "ensure_client_folder",
-            "description": "Find or create the client's Google Drive folder inside Chad's CLIENTS folder. Only call when Chad explicitly asks to create/find/set up a client or Drive folder. Lists folders live (never cached). Returns status 'exists' or 'created' with folder_id, name, url; 'ambiguous' with a list of matching folders (nothing created); 'not_found' if create_if_missing is false and no match; or 'error' with http_status and body.",
+            "description": "Find or create the client's Google Drive folder inside Chad's CLIENTS folder. Only call when Chad explicitly asks to create/find/set up a client or Drive folder. Lists folders live (never cached). Returns status 'exists' or 'created' with folder_id, name, url; 'ambiguous' with a list of matching folders (nothing created) — if reason is 'near_match' the folders only resemble the name (e.g. 'Fund' for 'Fund II LLC') and nothing is created even with create_if_missing: ask Chad which folder to use or whether to create a new one; 'not_found' if create_if_missing is false and no match; or 'error' with http_status and body.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "client_name": {"type": "string", "description": "Full legal entity name exactly as known (e.g. 'Acme Capital Partners LLC'), or the person's name ('First Last' or 'Last, First')"},
                 "client_type": {"type": "string", "enum": ["entity", "person"], "description": "'entity' for a legal entity (folder named exactly as given); 'person' for a natural person (folder named 'Last, First')"},
-                "create_if_missing": {"type": "boolean", "description": "Create the folder if no match exists. Default true."}
+                "create_if_missing": {"type": "boolean", "description": "Create the folder if no match exists. Default true."},
+                "create_new": {"type": "boolean", "description": "Set true ONLY after a near_match result when Chad explicitly said to create a new folder. Ignores near matches and creates the folder (an exact/prefix match is still reused). Default false."}
             }, "required": ["client_name", "client_type"]}}
         }
     },
     {
         "toolSpec": {
             "name": "upload_to_client_folder",
-            "description": "File attachments from the current email into a client's Google Drive folder (resolved like ensure_client_folder; partial entity names match by prefix). Only call when Chad explicitly asks to add/file/save documents. Uploads original bytes and filenames; never overwrites — a name clash is uploaded as 'name (2).ext' and flagged. Returns status 'uploaded' with folder, files [{index, name, file_id, url, renamed_due_to_duplicate}] and errors; or the folder status 'ambiguous' / 'not_found' / 'error' (nothing uploaded); or 'no_attachments'.",
+            "description": "File attachments from the current email into a client's Google Drive folder (resolved like ensure_client_folder; partial entity names match by prefix). Only call when Chad explicitly asks to add/file/save documents. Uploads original bytes and filenames; never overwrites — a name clash is uploaded as 'name (2).ext' and flagged. Returns status 'uploaded' with folder, files [{index, name, file_id, url, renamed_due_to_duplicate}] and errors; or the folder status 'ambiguous' / 'not_found' / 'error' (nothing uploaded; 'ambiguous' with reason 'near_match' means only similar folder names exist — ask Chad which to use or whether to create new); or 'no_attachments'.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "client_name": {"type": "string", "description": "Legal entity name (full or leading part, e.g. 'Preface Ventures'), or the person's name ('First Last' or 'Last, First')"},
                 "client_type": {"type": "string", "enum": ["entity", "person"], "description": "'entity' for a company folder; 'person' for a natural person's personal folder"},
                 "attachment_indexes": {"type": "array", "items": {"type": "integer"}, "description": "1-based indexes from the email's attachment inventory. Empty or omitted = all attachments."},
-                "create_if_missing": {"type": "boolean", "description": "Create the client folder if no match exists. Default true."}
+                "create_if_missing": {"type": "boolean", "description": "Create the client folder if no match exists. Default true."},
+                "create_new": {"type": "boolean", "description": "Set true ONLY after a near_match result when Chad explicitly said to create a new folder. Default false."}
             }, "required": ["client_name", "client_type"]}}
         }
     },
@@ -2031,6 +2053,7 @@ def _execute_tool_inner(tool_name, tool_input):
             tool_input.get("client_name", ""),
             tool_input.get("client_type", ""),
             tool_input.get("create_if_missing", True),
+            bool(tool_input.get("create_new", False)),
         )
         logger.info(f"ensure_client_folder: {json.dumps(result)}")
         return result
@@ -2041,6 +2064,7 @@ def _execute_tool_inner(tool_name, tool_input):
             tool_input.get("client_type", ""),
             tool_input.get("attachment_indexes") or None,
             tool_input.get("create_if_missing", True),
+            bool(tool_input.get("create_new", False)),
         )
         logger.info(f"upload_to_client_folder: {json.dumps(result, default=str)}")
         return result
@@ -2195,7 +2219,7 @@ def lambda_handler(event, context):
                             orig_name = str(email_lib.header.make_header(email_lib.header.decode_header(raw_name)))
                         except Exception:
                             orig_name = raw_name
-                        raw_attachments.append({"index": len(raw_attachments) + 1, "filename": orig_name.strip(),
+                        raw_attachments.append({"index": len(raw_attachments) + 1, "filename": _clean_filename(orig_name),
                                                 "mime": content_type, "data": part_bytes, "size": len(part_bytes)})
                 if content_type == 'text/plain' and not text_body:
                     payload = part.get_payload(decode=True)

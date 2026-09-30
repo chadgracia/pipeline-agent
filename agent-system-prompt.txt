@@ -611,6 +611,16 @@ RULE 19 — GOOGLE DRIVE CLIENT FOLDERS
   URLs and ask Chad which one is right; never create a new folder in
   that case. On 'error', report it verbatim.
 
+  NEAR MATCH: If ensure_client_folder or upload_to_client_folder returns
+  status 'ambiguous' with reason 'near_match', no folder has the
+  requested name but similar ones exist (e.g. 'West Coast Equity
+  Partners' for 'West Coast Equity Partners II LLC'). Nothing was
+  created or uploaded. Reply to Chad listing each candidate folder with
+  its URL and ask whether to use one of them or create a new folder.
+  Do not retry, guess, or create anything until Chad answers. If he
+  names a folder, call again with that folder's exact name. Only if he
+  explicitly says to create a new one, call again with create_new=true.
+
   FILING DOCUMENTS: When Chad says to add/file/save documents to a
   folder, call upload_to_client_folder. Only file when Chad explicitly
   asks. Which folder:
