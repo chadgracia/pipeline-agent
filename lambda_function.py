@@ -833,6 +833,46 @@ TOOL_SPECS = [
     }
 ]
 
+# ── Deal naming ───────────────────────────────────────────────────────────────
+def _to_amount(v):
+    """Parse a size value (number or string like '250,000') to a float; None if blank/invalid."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(str(v).replace(",", "").replace("$", "").strip())
+    except ValueError:
+        return None
+
+def format_deal_amount(amount):
+    """K under $1M ($250K), M under $1B ($5M, $1.5M), B from $1B ($1.5B); one decimal, trailing .0 dropped."""
+    def _short(x):
+        s = f"{x:.1f}"
+        return s[:-2] if s.endswith(".0") else s
+    for unit, div in (("K", 1_000), ("M", 1_000_000)):
+        if amount < div * 1000 and round(amount / div, 1) < 1000:
+            return f"${_short(amount / div)}{unit}"
+    return f"${_short(amount / 1_000_000_000)}B"
+
+def build_deal_name(company, min_size, max_size, deal_type):
+    """Deterministic deal name: '{Company}: {Min} - {Max} {Buy|Sell}'.
+    Min equal to max → '{Company}: {Max} {Side}'; min missing/zero → '{Company}: up to {Max} {Side}';
+    max missing → '{Company}: {Min}+ {Side}'; no size at all → '{Company}: {Side}'."""
+    side = "Buy" if str(deal_type or "").strip().lower() == "buy" else "Sell"
+    lo, hi = _to_amount(min_size), _to_amount(max_size)
+    lo = lo if lo and lo > 0 else None
+    hi = hi if hi and hi > 0 else None
+    if hi is not None and lo is not None and format_deal_amount(lo) != format_deal_amount(hi):
+        size = f"{format_deal_amount(lo)} - {format_deal_amount(hi)}"
+    elif hi is not None and lo is not None:
+        size = format_deal_amount(hi)
+    elif hi is not None:
+        size = f"up to {format_deal_amount(hi)}"
+    elif lo is not None:
+        size = f"{format_deal_amount(lo)}+"
+    else:
+        size = None
+    return f"{company}: {size} {side}" if size else f"{company}: {side}"
+
 # ── Execute a tool call ───────────────────────────────────────────────────────
 def execute_tool(tool_name, tool_input):
     logger.info(f"Tool: {tool_name}, Input: {json.dumps(tool_input)}")
@@ -1871,8 +1911,22 @@ def _execute_tool_inner(tool_name, tool_input):
 
         custom_fields["custom_label_4001285"] = 7187011  # Messaging = Disallow
 
+        # Deal name is built here from company + sizes so the format holds regardless of what the model passed.
+        # Company name comes from the live record (new companies may not be in the hourly snapshot);
+        # fall back to the text before ':' in the model-supplied name.
+        company_name = None
+        try:
+            company = call_pipeline_api("GET", f"/companies/{tool_input['company_id']}.json")
+            if company["status"] == 200:
+                company_name = (company["data"].get("name") or "").strip() or None
+        except Exception as e:
+            logger.warning(f"create_deal: failed to fetch company {tool_input.get('company_id')} for deal name: {e}")
+        if not company_name:
+            company_name = (tool_input.get("name") or "").split(":")[0].strip() or "Unknown"
+        deal_name = build_deal_name(company_name, tool_input.get("min_size"), tool_input.get("max_size"), deal_type)
+
         payload = {"deal": {
-            "name": tool_input["name"],
+            "name": deal_name,
             "company_id": tool_input["company_id"],
             "primary_contact_id": tool_input["primary_contact_id"],
             "deal_stage_id": tool_input["deal_stage_id"],
@@ -1886,6 +1940,7 @@ def _execute_tool_inner(tool_name, tool_input):
                 "success": True,
                 "deal_id": deal_id,
                 "deal_url": f"https://app.pipelinecrm.com/deals/{deal_id}",
+                "deal_name": deal_name,
                 "message": "Deal created successfully."
             }
         return {"error": f"HTTP {result['status']}", "detail": result.get("data")}
