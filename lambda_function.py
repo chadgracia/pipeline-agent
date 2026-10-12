@@ -748,9 +748,9 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "create_deal",
-            "description": "Create a new deal in Pipeline CRM. Always look up company_id via search_companies and primary_contact_id via search_people first. Deal name format: 'CompanyName: $Min - $Max Buy/Sell' (e.g. 'Applied Intuition: $250K - $5M Sell'); the handler rebuilds the name from company_id, min_size, max_size and deal_type, so pass the sizes accurately. Revenue type is always Commission. Stage is Firm only if BOTH a price field (gross or net) AND a size field (min or max) are present; Inquiry otherwise. Messaging is always set to Disallow on creation.",
+            "description": "Create a new deal in Pipeline CRM. Always look up company_id via search_companies and primary_contact_id via search_people first. Deal name format: 'Company: $MIN - $MAX Buy/Sell' (min=max → 'Company: $X Sell'; min only → 'Company: $MIN+ Buy'; max only → 'Company: up to $MAX Sell'; no size → 'Company: Buy'). K/M/B amounts, drop trailing .0, spaced hyphen not en dash. Revenue type is always Commission. Stage is Firm only if BOTH a price field (gross or net) AND a size field (min or max) are present; Inquiry otherwise. Messaging is always set to Disallow on creation.",
             "inputSchema": {"json": {"type": "object", "properties": {
-                "name": {"type": "string", "description": "Deal name e.g. 'SpaceX: $500K - $2M Sell' ('SpaceX: $2M Sell' when min is absent or equals max; 'SpaceX: $500K+ Sell' when only min is known). Overwritten by the handler with the same format built from the size fields."},
+                "name": {"type": "string", "description": "Deal name, company first then colon, e.g. 'Anthropic: $100K - $250K Buy'"},
                 "company_id": {"type": "integer", "description": "Pipeline company ID — look up via search_companies first"},
                 "primary_contact_id": {"type": "integer", "description": "Pipeline person ID — look up via search_people first"},
                 "deal_stage_id": {"type": "integer", "description": "2109142=Inquiry, 111800=Firm, 2381534=Matched, 2388323=Confirm, 2094373=Hold. Default Inquiry; use Firm only when BOTH a price field (gross or net) AND a size field (min or max) are present."},
@@ -844,27 +844,29 @@ def _to_amount(v):
         return None
 
 def format_deal_amount(amount):
-    """$250K under $1M, $5M / $1.5M / $12.5M at $1M and above (one decimal, trailing .0 dropped)."""
+    """K under $1M ($250K), M under $1B ($5M, $1.5M), B from $1B ($1.5B); one decimal, trailing .0 dropped."""
     def _short(x):
         s = f"{x:.1f}"
         return s[:-2] if s.endswith(".0") else s
-    k = round(amount / 1_000, 1)
-    if amount < 1_000_000 and k < 1000:
-        return f"${_short(k)}K"
-    return f"${_short(amount / 1_000_000)}M"
+    for unit, div in (("K", 1_000), ("M", 1_000_000)):
+        if amount < div * 1000 and round(amount / div, 1) < 1000:
+            return f"${_short(amount / div)}{unit}"
+    return f"${_short(amount / 1_000_000_000)}B"
 
 def build_deal_name(company, min_size, max_size, deal_type):
     """Deterministic deal name: '{Company}: {Min} - {Max} {Buy|Sell}'.
-    Min missing/zero/equal to max → '{Company}: {Max} {Side}'; max missing → '{Company}: {Min}+ {Side}';
-    no size at all → '{Company}: {Side}'."""
+    Min equal to max → '{Company}: {Max} {Side}'; min missing/zero → '{Company}: up to {Max} {Side}';
+    max missing → '{Company}: {Min}+ {Side}'; no size at all → '{Company}: {Side}'."""
     side = "Buy" if str(deal_type or "").strip().lower() == "buy" else "Sell"
     lo, hi = _to_amount(min_size), _to_amount(max_size)
     lo = lo if lo and lo > 0 else None
     hi = hi if hi and hi > 0 else None
     if hi is not None and lo is not None and format_deal_amount(lo) != format_deal_amount(hi):
         size = f"{format_deal_amount(lo)} - {format_deal_amount(hi)}"
-    elif hi is not None:
+    elif hi is not None and lo is not None:
         size = format_deal_amount(hi)
+    elif hi is not None:
+        size = f"up to {format_deal_amount(hi)}"
     elif lo is not None:
         size = f"{format_deal_amount(lo)}+"
     else:

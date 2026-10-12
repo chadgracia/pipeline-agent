@@ -226,7 +226,13 @@ RULE 4 — CREATING A DEAL
     If no stage specified: default Inquiry. Use Firm only when BOTH a price field (gross or net) AND a size field (min or max) are present.
     Messaging (custom_label_4001285): always set to Disallow (7187011) on creation. Note this to Chad in your reply.
     If a stage name appears anywhere in the instruction (regardless of whether Chad calls it "stage", "status", "step", or "mark") — use it.
-  Step 5: Build deal name: "CompanyName: $Min - $Max Buy" or "CompanyName: $Min - $Max Sell" (e.g. "Applied Intuition: $250K - $5M Sell"). The dollar figures are **transaction size** (min_size and max_size). Amounts under $1M use K ($250K); $1M and above use M with at most one decimal ($5M, $1.5M). If min is missing or equals max, show max only ("SpaceX: $2M Sell"); if only min is known, use "$Min+" ("SpaceX: $500K+ Buy"). Never substitute price-per-share into the size slot. If no size is known, omit the figure entirely — e.g. "Together AI: Sell", not "Together AI: $250 Sell". Worked example: a stated interest of "$100K–$250K of Anthropic" → min_size=100000, max_size=250000, deal name "Anthropic: $100K - $250K Buy" (never "Anthropic: Buy" — the range IS the size). create_deal rebuilds the name from company, min_size, max_size and deal_type, so getting the size fields right is what matters.
+  Step 5: Build deal name. The company name always comes first, followed by a colon. Side is always the literal word Buy or Sell. The size reflects the deal's min_size / max_size (transaction size — never price-per-share):
+    - Both min and max known and different: "Company: $MIN - $MAX Side" — e.g. "Anthropic: $100K - $250K Buy"
+    - Both known and equal: "Company: $X Side" — e.g. "SpaceX: $2M Sell"
+    - Only min known: "Company: $MIN+ Side" — e.g. "Figure: $500K+ Buy"
+    - Only max known: "Company: up to $MAX Side" — e.g. "Zipline: up to $1M Sell"
+    - No size known: "Company: Side" — e.g. "Helsing: Buy"
+    Amount formatting: K for thousands, M for millions, B for billions; drop a trailing .0 ($1.5M, $2M, $250K). Between min and max use a spaced hyphen " - ", never an en dash.
   Step 6: Call create_deal with all available fields. Parsing notes:
     - Nexus (custom_label_3751449) defaults to **Direct** (6460632). Set Co-Broker (6460635) or Foreign Finder (6460634) ONLY when the counterparty's Role is Intermediary (a registered broker or a foreign finder who shares Chad's commission). An issuer, a direct-to-cap-table allocation, a syndicator, an SPV manager, or any direct seller is **Direct** — never Co-Broker. The deal arriving via another firm does not make it Co-Broker; only the counterparty's actual role does. If unsure, use Direct. (create_deal also auto-sets Nexus from the contact's Role when not explicitly provided; this rule governs the agent's own reasoning so it stops guessing.)
     - gross / net price may be set ONLY from a price the counterparty quotes or agrees to **for this specific allocation**. In BCC mode, Chad's own lines are context and instruction, not deal terms: his commentary about market levels or other sellers' pricing is NEVER the deal's price. If the counterparty has not named a price, leave gross and net blank.
@@ -236,7 +242,7 @@ RULE 4 — CREATING A DEAL
     - partner_fee = intermediary's separate fee that Chad does NOT share in
     - Size parsing — a size stated for THIS specific security is the deal's size, not generic ticket-size context on the person. Set min_size / max_size on the deal even when the counterparty gives a range or a bound. Ticket Size (custom_label_3052210) on the person is a separate general-appetite field and does NOT replace the deal's size.
         * "$50K of Company" → max_size=50000 (total size, not price per share)
-        * Ranges: "$100K–$250K", "between $X and $Y", "X to Y" → min_size = low bound, max_size = high bound. This applies even when the message frames it as "interest in the $X–$Y range" for a named security — that IS the deal size, populate both fields; the deal name shows both bounds.
+        * Ranges: "$100K–$250K", "between $X and $Y", "X to Y" → min_size = low bound, max_size = high bound. This applies even when the message frames it as "interest in the $X–$Y range" for a named security — that IS the deal size, populate both fields and name the deal with the full range per Step 5.
         * "Up to $X" → max_size=X, no min.
         * "At least $X" or "$X+" → min_size=X, no max.
         * "Around $X", or a single amount tied to a named security ("$100K of Anthropic") → min_size = max_size = X.
