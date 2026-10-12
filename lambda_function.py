@@ -748,9 +748,9 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "create_deal",
-            "description": "Create a new deal in Pipeline CRM. Always look up company_id via search_companies and primary_contact_id via search_people first. Deal name format: 'CompanyName: $XM Buy/Sell'. Revenue type is always Commission. Stage is Firm only if BOTH a price field (gross or net) AND a size field (min or max) are present; Inquiry otherwise. Messaging is always set to Disallow on creation.",
+            "description": "Create a new deal in Pipeline CRM. Always look up company_id via search_companies and primary_contact_id via search_people first. Deal name format: 'Company: $MIN - $MAX Buy/Sell' (min=max → 'Company: $X Sell'; min only → 'Company: $MIN+ Buy'; max only → 'Company: up to $MAX Sell'; no size → 'Company: Buy'). K/M/B amounts, drop trailing .0, spaced hyphen not en dash. Revenue type is always Commission. Stage is Firm only if BOTH a price field (gross or net) AND a size field (min or max) are present; Inquiry otherwise. Messaging is always set to Disallow on creation.",
             "inputSchema": {"json": {"type": "object", "properties": {
-                "name": {"type": "string", "description": "Deal name e.g. 'SpaceX: $2M Sell'"},
+                "name": {"type": "string", "description": "Deal name, company first then colon, e.g. 'Anthropic: $100K - $250K Buy'"},
                 "company_id": {"type": "integer", "description": "Pipeline company ID — look up via search_companies first"},
                 "primary_contact_id": {"type": "integer", "description": "Pipeline person ID — look up via search_people first"},
                 "deal_stage_id": {"type": "integer", "description": "2109142=Inquiry, 111800=Firm, 2381534=Matched, 2388323=Confirm, 2094373=Hold. Default Inquiry; use Firm only when BOTH a price field (gross or net) AND a size field (min or max) are present."},
