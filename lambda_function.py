@@ -748,9 +748,9 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "create_deal",
-            "description": "Create a new deal in Pipeline CRM. Always look up company_id via search_companies and primary_contact_id via search_people first. Deal name format: 'CompanyName: $XM Buy/Sell'. Revenue type is always Commission. Stage is Firm only if BOTH a price field (gross or net) AND a size field (min or max) are present; Inquiry otherwise. Messaging is always set to Disallow on creation.",
+            "description": "Create a new deal in Pipeline CRM. Always look up company_id via search_companies and primary_contact_id via search_people first. Deal name format: 'CompanyName: $Min - $Max Buy/Sell' (e.g. 'Applied Intuition: $250K - $5M Sell'); the handler rebuilds the name from company_id, min_size, max_size and deal_type, so pass the sizes accurately. Revenue type is always Commission. Stage is Firm only if BOTH a price field (gross or net) AND a size field (min or max) are present; Inquiry otherwise. Messaging is always set to Disallow on creation.",
             "inputSchema": {"json": {"type": "object", "properties": {
-                "name": {"type": "string", "description": "Deal name e.g. 'SpaceX: $2M Sell'"},
+                "name": {"type": "string", "description": "Deal name e.g. 'SpaceX: $500K - $2M Sell' ('SpaceX: $2M Sell' when min is absent or equals max; 'SpaceX: $500K+ Sell' when only min is known). Overwritten by the handler with the same format built from the size fields."},
                 "company_id": {"type": "integer", "description": "Pipeline company ID — look up via search_companies first"},
                 "primary_contact_id": {"type": "integer", "description": "Pipeline person ID — look up via search_people first"},
                 "deal_stage_id": {"type": "integer", "description": "2109142=Inquiry, 111800=Firm, 2381534=Matched, 2388323=Confirm, 2094373=Hold. Default Inquiry; use Firm only when BOTH a price field (gross or net) AND a size field (min or max) are present."},
@@ -832,6 +832,44 @@ TOOL_SPECS = [
         }
     }
 ]
+
+# ── Deal naming ───────────────────────────────────────────────────────────────
+def _to_amount(v):
+    """Parse a size value (number or string like '250,000') to a float; None if blank/invalid."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(str(v).replace(",", "").replace("$", "").strip())
+    except ValueError:
+        return None
+
+def format_deal_amount(amount):
+    """$250K under $1M, $5M / $1.5M / $12.5M at $1M and above (one decimal, trailing .0 dropped)."""
+    def _short(x):
+        s = f"{x:.1f}"
+        return s[:-2] if s.endswith(".0") else s
+    k = round(amount / 1_000, 1)
+    if amount < 1_000_000 and k < 1000:
+        return f"${_short(k)}K"
+    return f"${_short(amount / 1_000_000)}M"
+
+def build_deal_name(company, min_size, max_size, deal_type):
+    """Deterministic deal name: '{Company}: {Min} - {Max} {Buy|Sell}'.
+    Min missing/zero/equal to max → '{Company}: {Max} {Side}'; max missing → '{Company}: {Min}+ {Side}';
+    no size at all → '{Company}: {Side}'."""
+    side = "Buy" if str(deal_type or "").strip().lower() == "buy" else "Sell"
+    lo, hi = _to_amount(min_size), _to_amount(max_size)
+    lo = lo if lo and lo > 0 else None
+    hi = hi if hi and hi > 0 else None
+    if hi is not None and lo is not None and format_deal_amount(lo) != format_deal_amount(hi):
+        size = f"{format_deal_amount(lo)} - {format_deal_amount(hi)}"
+    elif hi is not None:
+        size = format_deal_amount(hi)
+    elif lo is not None:
+        size = f"{format_deal_amount(lo)}+"
+    else:
+        size = None
+    return f"{company}: {size} {side}" if size else f"{company}: {side}"
 
 # ── Execute a tool call ───────────────────────────────────────────────────────
 def execute_tool(tool_name, tool_input):
@@ -1871,8 +1909,22 @@ def _execute_tool_inner(tool_name, tool_input):
 
         custom_fields["custom_label_4001285"] = 7187011  # Messaging = Disallow
 
+        # Deal name is built here from company + sizes so the format holds regardless of what the model passed.
+        # Company name comes from the live record (new companies may not be in the hourly snapshot);
+        # fall back to the text before ':' in the model-supplied name.
+        company_name = None
+        try:
+            company = call_pipeline_api("GET", f"/companies/{tool_input['company_id']}.json")
+            if company["status"] == 200:
+                company_name = (company["data"].get("name") or "").strip() or None
+        except Exception as e:
+            logger.warning(f"create_deal: failed to fetch company {tool_input.get('company_id')} for deal name: {e}")
+        if not company_name:
+            company_name = (tool_input.get("name") or "").split(":")[0].strip() or "Unknown"
+        deal_name = build_deal_name(company_name, tool_input.get("min_size"), tool_input.get("max_size"), deal_type)
+
         payload = {"deal": {
-            "name": tool_input["name"],
+            "name": deal_name,
             "company_id": tool_input["company_id"],
             "primary_contact_id": tool_input["primary_contact_id"],
             "deal_stage_id": tool_input["deal_stage_id"],
@@ -1886,6 +1938,7 @@ def _execute_tool_inner(tool_name, tool_input):
                 "success": True,
                 "deal_id": deal_id,
                 "deal_url": f"https://app.pipelinecrm.com/deals/{deal_id}",
+                "deal_name": deal_name,
                 "message": "Deal created successfully."
             }
         return {"error": f"HTTP {result['status']}", "detail": result.get("data")}
