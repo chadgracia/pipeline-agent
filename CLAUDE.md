@@ -32,9 +32,8 @@ AWS Lambda that acts as a CRM assistant for Chad Gracia (Rainmaker Securities, F
 - Full list lives in `agent-system-prompt.txt` and in `lambda_function.py:475`+ (STRUCTURE_MAP, NEXUS_MAP, etc.).
 
 ## Conventions
-- Branch names: `claude/<topic>-<id>` (e.g. `claude/email-comparison-null-handling-O0lVN`). The session-assigned branch is the only branch to push to without explicit permission.
+- Workflow: commit, merge directly to main, and push. No PRs or feature branches unless a task explicitly says otherwise (e.g. security rotations that need an env var updated first).
 - Commits: write the **why**, not the what. Squash on merge.
-- Do not push to `main` directly. Open a PR.
 - The S3 bucket name and prompt-sync workflow are committed convention — don't rename without coordinating an AWS-side rename.
 - Person records have three email slots: `email` (primary work), `email2`, `home_email`. Lookup and dedup paths should check all three (the AWS-signup handler near `lambda_function.py:1674` is the one remaining primary-only check — flagged as a known gap).
 - Pipeline CRM rejects numeric fields containing commas — always strip before sending.

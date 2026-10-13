@@ -241,11 +241,10 @@ RULE 4 — CREATING A DEAL
     - "upfront fee", "one-time fee", "seller fee", "setup fee" → seller_fee (NOT management_fee) — but ONLY when charged by the SPV manager/syndicator. Chad's personal commission is never seller_fee: if the fee mentioned is Chad's own compensation, skip it entirely (no field).
     - partner_fee = intermediary's separate fee that Chad does NOT share in
     - Size parsing — a size stated for THIS specific security is the deal's size, not generic ticket-size context on the person. Set min_size / max_size on the deal even when the counterparty gives a range or a bound. Ticket Size (custom_label_3052210) on the person is a separate general-appetite field and does NOT replace the deal's size.
-        * "$50K of Company" → max_size=50000 (total size, not price per share)
-        * Ranges: "$100K–$250K", "between $X and $Y", "X to Y" → min_size = low bound, max_size = high bound. This applies even when the message frames it as "interest in the $X–$Y range" for a named security — that IS the deal size, populate both fields and name the deal with the full range per Step 5.
-        * "Up to $X" → max_size=X, no min.
-        * "At least $X" or "$X+" → min_size=X, no max.
-        * "Around $X", or a single amount tied to a named security ("$100K of Anthropic") → min_size = max_size = X.
+        * Single bare amount — "$50K of Company", "50K Anthropic", "$2M SpaceX", "around $X" → min_size = max_size = X (total size, not price per share). Name: "Company: $50K Buy".
+        * Upper bound only — "up to $X", "max $X", "no more than $X" → max_size=X, no min. Name: "Company: up to $X Buy".
+        * Lower bound only — "$X+", "at least $X", "min $X", "$X or more" → min_size=X, no max. Name: "Company: $X+ Buy".
+        * Range — "$X - $Y", "$X to $Y", "$X–$Y", "between $X and $Y" → min_size = low bound, max_size = high bound. This applies even when the message frames it as "interest in the $X–$Y range" for a named security — that IS the deal size. Name: "Company: $X - $Y Buy".
         * Only omit both fields when no size figure appears anywhere in the message tied to this security. Do NOT skip size just because price is unknown — Firm-vs-Inquiry is decided in Step 4 by the combination.
     - Gross/Net are per share unless stated otherwise
     - Strip commas from all numeric fields before sending
