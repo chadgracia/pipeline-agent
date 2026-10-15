@@ -169,6 +169,60 @@ def _refresh_security_ids_from_api():
     )
     return True
 
+# ── Form-status downgrade guard ───────────────────────────────────────────────
+# IQF / CEF Submitted are set when a form is received and must never be
+# downgraded by the agent. Rank each option; an incoming value that ranks <= the
+# current value (and differs from it) is dropped from the update payload.
+FORM_STATUS_RANKS = {
+    "custom_label_3763008": ("IQF Submitted", {6496840: 3, 6496842: 2, 6596073: 1, 6496841: 1},
+                             {6496840: "Yes", 6496842: "Pending", 6596073: "Unnecessary", 6496841: "No"}),
+    "custom_label_3796440": ("CEF Submitted", {6600515: 3, 6600514: 2, 6600516: 1, 6600513: 1},
+                             {6600515: "Yes", 6600514: "Pending", 6600516: "N/A", 6600513: "No"}),
+}
+
+def _single_option_id(v):
+    if isinstance(v, list):
+        v = v[0] if v else None
+    if isinstance(v, dict):
+        v = v.get("id")
+    if v is None or isinstance(v, bool):
+        return None
+    s = str(v).strip()
+    return int(s) if s.isdigit() else None
+
+def guard_form_status_downgrades(person_id, custom):
+    """Drop IQF/CEF keys from `custom` that would downgrade the live value.
+    Returns a list of human-readable blocked-downgrade messages."""
+    keys = [k for k in FORM_STATUS_RANKS if k in custom]
+    if not keys:
+        return []
+    blocked = []
+    existing = call_pipeline_api("GET", f"/people/{person_id}.json")
+    if existing["status"] != 200 or not isinstance(existing["data"], dict):
+        # Fail open on the rest of the update, closed on these fields.
+        logger.warning(f"form-status guard: could not fetch person {person_id} "
+                       f"(status {existing['status']}); dropping {keys} from update")
+        for k in keys:
+            label = FORM_STATUS_RANKS[k][0]
+            custom.pop(k, None)
+            blocked.append(f"{label}: not changed (could not verify current value)")
+        return blocked
+    existing_cf = existing["data"].get("custom_fields") or {}
+    for k in keys:
+        label, ranks, names = FORM_STATUS_RANKS[k]
+        cur = _single_option_id(existing_cf.get(k))
+        new = _single_option_id(custom[k])
+        if new == cur:
+            continue
+        if ranks.get(new, 0) <= ranks.get(cur, 0):
+            cur_name = names.get(cur, "blank" if cur is None else str(cur))
+            new_name = names.get(new, "blank" if new is None else str(new))
+            custom.pop(k)
+            msg = f"{label}: kept {cur_name} (attempted {new_name})"
+            logger.warning(f"form-status guard: person {person_id} — {msg}")
+            blocked.append(msg)
+    return blocked
+
 # ── Call Pipeline CRM API ─────────────────────────────────────────────────────
 def call_pipeline_api(method, endpoint, payload=None):
     base_url = "https://api.pipelinecrm.com/api/v3"
@@ -1198,12 +1252,20 @@ def _execute_tool_inner(tool_name, tool_input):
                     remove_ids = set(_id_list(removals.get(k)))
                     merged = _id_list(existing_cf.get(k)) + _id_list(custom.get(k))
                     custom[k] = [i for i in dict.fromkeys(merged) if i not in remove_ids]
+        blocked_downgrades = guard_form_status_downgrades(tool_input["person_id"], custom)
+        if not standard and not custom:
+            return {"success": True, "blocked_downgrades": blocked_downgrades,
+                    "message": "No fields written — every requested change was a blocked downgrade. Report blocked_downgrades to the user."}
         payload = {"person": standard}
         if custom:
             payload["person"]["custom_fields"] = custom
         result = call_pipeline_api("PUT", f"/people/{tool_input['person_id']}.json", payload)
         if result["status"] == 200:
-            return {"success": True, "message": "Record updated. Do not verify or retry — report success to the user."}
+            out = {"success": True, "message": "Record updated. Do not verify or retry — report success to the user."}
+            if blocked_downgrades:
+                out["blocked_downgrades"] = blocked_downgrades
+                out["message"] += " Some fields were NOT changed — report blocked_downgrades to the user."
+            return out
         return {"success": False, "status": result["status"], "error": result["data"]}
 
     elif tool_name == "update_company":

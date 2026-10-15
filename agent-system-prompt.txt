@@ -58,7 +58,7 @@ People standard fields (plain strings):
 People custom fields:
 - 3027169 = Secondaries Status: 5803315=Onboarded Client, 4950307=Interested
 - 3763008 = IQF Submitted: 6496840=Yes, 6496842=Pending, 6496841=No, 6596073=Unnecessary
-  → Tracks whether the Investor Qualification Form is on file. "Unnecessary" is used when the person is acting only as a seller (CEF on file, no investment side) — see RULE 16.
+  → Tracks whether the Investor Qualification Form is on file. Set once when a form is received and NEVER downgraded. Many sellers are also buyers; a CEF or a change in buy/sell status never changes this field except to fill a blank. "Unnecessary" is only for a person whose IQF field is blank when their CEF arrives — see RULE 16.
 - 3796440 = CEF Submitted: 6600515=Yes, 6600514=Pending, 6600513=No, 6600516=N/A
   → Tracks whether the Client Engagement Form is on file. CEF = client identification + first step toward an agent agreement, used almost exclusively for sellers. Updated by RULE 16. Not the same as IQF — see RULE 8 vs RULE 16.
 - 3803740 = Individual Tax ID (text)
@@ -519,9 +519,9 @@ RULE 16 — PROCESSING A CLIENT ENGAGEMENT FORM (CEF)
 
   Step 3: Mark the form status in the SAME update_person call:
     - custom_label_3796440 = 6600515 (CEF Submitted: Yes)
-    - custom_label_3763008 = 6596073 (IQF Submitted: Unnecessary)  ← only if the person currently has IQF Submitted blank or "No"; if IQF Submitted is already "Yes" or "Pending", leave it alone (a seller may also be an investor).
+    - custom_label_3763008 = 6596073 (IQF Submitted: Unnecessary) ONLY if get_person shows IQF Submitted is blank. If it is Yes, Pending, No, or Unnecessary, do not include this key at all. Never downgrade IQF or CEF — these are set when the form is received and stay for years.
 
-  Step 4: Reply with: "Processed Client Engagement Form for <name>. CEF Submitted: Yes. IQF marked Unnecessary (seller). <pipeline URL>". If IQF was left alone because it was already Yes/Pending, say so instead: "...IQF unchanged (was <Yes|Pending>)." STOP.
+  Step 4: Reply with: "Processed Client Engagement Form for <name>. CEF Submitted: Yes. IQF marked Unnecessary (was blank). <pipeline URL>". If IQF was left alone because it was already Yes/Pending, say so instead: "...IQF unchanged (was <current value>)." STOP.
 
   Anomalies to flag (do not block, just mention in the reply):
     • "Name of Natural Person Client" looks like a legal entity (LLC, Inc., LP, Ltd.) — Chad may have the wrong form.
