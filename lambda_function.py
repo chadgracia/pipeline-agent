@@ -7,7 +7,13 @@ import logging
 import re
 import os
 import time
+import unicodedata
 from datetime import date
+
+try:
+    from pypdf import PdfReader   # bundled into the deploy zip by .github/workflows/deploy.yml
+except ImportError:
+    PdfReader = None
 
 HIIVE_ASK_FIELD       = "custom_label_3997297"
 HIIVE_BID_FIELD       = "custom_label_3997298"
@@ -413,12 +419,384 @@ def _match_client_folders(client_name, client_type, folders):
             near.append(f)
     return [], near
 
-def ensure_client_folder(client_name, client_type, create_if_missing=True, create_new=False):
+# ── Person folder resolution (identity clues + nicknames) ─────────────────────
+# Person folders are resolved from the strongest identity clue on the email, not just the name the
+# agent passes (which may be a nickname from a signature): 1) email addresses (sender / forwarded
+# sender / attachment text) looked up in Pipeline, 2) full names in attachment file names and PDF
+# text, 3) names in the email subject/body. Folders are then matched by last name + first name,
+# nickname variant (names.csv, vendored from github.com/carltonnorthern/nicknames), or contents.
+
+NICKNAMES_CSV       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "names.csv")
+_INTERNAL_DOMAINS   = ("graciagroup.com", "rainmakersecurities.com", "amazonses.com", "amazonaws.com")
+_NAME_SUFFIXES      = {"jr", "sr", "ii", "iii", "iv", "v", "md", "phd", "esq", "cpa", "cfa"}
+_NOT_FIRST_NAMES    = {"mr", "mrs", "ms", "miss", "dr", "by", "and", "or", "the", "of", "to", "for", "from",
+                       "signed", "name", "dear", "hi", "hello", "thanks", "re", "fw", "fwd", "attn", "per",
+                       "with", "between", "seller", "buyer", "transferor", "transferee", "holder", "investor",
+                       "signature", "print", "printed", "title", "date", "email", "cc", "bcc", "is", "as"}
+_EMAIL_RE           = re.compile(r"[\w.+%-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}", re.I)
+_PDF_MAX_PAGES      = 30
+_PDF_MAX_CHARS      = 200_000
+
+# Email being processed (set by lambda_handler for SES invocations, reset on every invocation).
+_CURRENT_EMAIL = {}
+_nicknames = None
+
+def _load_nicknames(path=None):
+    """{name: set(names)} of direct nickname relations, both directions. Missing file → {}."""
+    rel = {}
+    try:
+        with open(path or NICKNAMES_CSV, encoding="utf-8") as fh:
+            for line in fh:
+                parts = [x.strip().lower() for x in line.split(",")]
+                if len(parts) != 3 or parts[1] != "has_nickname":
+                    continue
+                rel.setdefault(parts[0], set()).add(parts[2])
+                rel.setdefault(parts[2], set()).add(parts[0])
+    except OSError:
+        pass
+    return rel
+
+def _nickname_map():
+    global _nicknames
+    if _nicknames is None:
+        _nicknames = _load_nicknames()
+        logger.info(f"Loaded nickname data: {len(_nicknames)} names")
+    return _nicknames
+
+def _name_tokens(s):
+    """Lowercase ASCII word tokens: accents stripped, punctuation dropped, dashes split words."""
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    s = re.sub(r"[-‐‑‒–—/_]", " ", s)
+    s = re.sub(r"[^\w\s,]", "", s)
+    return s.replace(",", " , ").split()
+
+def _split_person_name(name):
+    """('first', ['last', ...]) from 'First [Middle] Last' or 'Last, First'. Suffixes dropped.
+    A single token comes back as ('', [token])."""
+    toks = [t for t in _name_tokens(name) if t not in _NAME_SUFFIXES]
+    if "," in toks:
+        i = toks.index(",")
+        last = [t for t in toks[:i] if t != ","]
+        first = [t for t in toks[i + 1:] if t != ","]
+        if last and first:
+            return first[0], last
+        toks = last or first
+    if not toks:
+        return "", []
+    if len(toks) == 1:
+        return "", toks
+    return toks[0], toks[-1:]
+
+def _first_name_relation(a, b, nick):
+    """'first name' if equal, 'nickname' if a direct nickname pair, else None."""
+    a, b = (a or "").lower(), (b or "").lower()
+    if not a or not b:
+        return None
+    if a == b:
+        return "first name"
+    if b in nick.get(a, ()) or a in nick.get(b, ()):
+        return "nickname"
+    return None
+
+def _first_names_consistent(a, b, nick):
+    """Looser check for 'is this clue about the same person': equal, nickname pair, or one is a
+    3+ letter prefix of the other (Zach / Zachary)."""
+    a, b = (a or "").lower(), (b or "").lower()
+    if _first_name_relation(a, b, nick):
+        return True
+    short, long_ = sorted((a, b), key=len)
+    return len(short) >= 3 and long_.startswith(short)
+
+def _extract_emails(text):
+    out = []
+    for e in _EMAIL_RE.findall(text or ""):
+        e = e.lower().strip(".")
+        if e not in out:
+            out.append(e)
+    return out
+
+def _is_internal_email(email):
+    dom = email.rsplit("@", 1)[-1].lower()
+    return any(dom == d or dom.endswith("." + d) for d in _INTERNAL_DOMAINS)
+
+def _names_with_last(text, last):
+    """First names written next to the last name in text: 'First [M.] Last' or 'Last, First'.
+    Case-insensitive (signature blocks are often all caps). Returns lowercase first names in order."""
+    if not text or not last:
+        return []
+    flat = unicodedata.normalize("NFKD", text)
+    flat = "".join(c for c in flat if not unicodedata.combining(c))
+    flat = re.sub(r"[_]", " ", flat)
+    ln = r"[\s-]+".join(re.escape(t) for t in last)
+    word = r"([A-Za-z][A-Za-z'’]+)"
+    pats = [rf"\b{word}(?:\s+[A-Za-z]\.?)?\s+{ln}\b", rf"\b{ln}\s*,\s*{word}\b"]
+    found = []
+    for pat in pats:
+        for m in re.finditer(pat, flat, re.I):
+            f = re.sub(r"['’]", "", m.group(1)).lower()
+            if len(f) >= 2 and f not in _NOT_FIRST_NAMES and f not in _NAME_SUFFIXES and f not in found:
+                found.append(f)
+    return found
+
+def _names_signed(text):
+    """(first, [last]) pairs from 'signed by First Last' / 'Name: First Last' / 'By: First Last'.
+    Used when the requested name has no last name to anchor on."""
+    out = []
+    for m in re.finditer(r"(?i:signed\s+by|name\s*:|by\s*:)\s*([A-Z][A-Za-z'’]+)\s+(?:[A-Z]\.?\s+)?([A-Z][A-Za-z'’-]+)",
+                         text or ""):
+        first, last = _split_person_name(f"{m.group(1)} {m.group(2)}")
+        if first and last and first not in _NOT_FIRST_NAMES and (first, last) not in out:
+            out.append((first, last))
+    return out
+
+def _display_part(original, tokens):
+    """The words of `original` that normalize to `tokens` (keeps 'McDonald' casing), else title case."""
+    words = [w for w in re.split(r"[\s,]+", original or "") if w]
+    n = len(tokens)
+    for i in range(len(words) - n + 1):
+        if [t for w in words[i:i + n] for t in _name_tokens(w)] == tokens:
+            return " ".join(words[i:i + n])
+    return " ".join(tokens).title()
+
+def _pick_identity(requested, clues, nick):
+    """Strongest clue consistent with the requested name. clues: ordered list of
+    {"source", "detail", "first", "last" (token list), "emails"}. A clue counts only if it names the
+    same person: same last name and a consistent first name (or, when only one name was requested,
+    either part matches). Within a source tier the longest first name wins (Zachary over Zach).
+    Returns the chosen clue dict, or a synthesized one from the requested name."""
+    rf, rl = _split_person_name(requested)
+
+    def consistent(c):
+        if not c.get("first") or not c.get("last"):
+            return False
+        if rf:
+            return c["last"] == rl and _first_names_consistent(rf, c["first"], nick)
+        return c["last"] == rl or _first_names_consistent(rl[0] if rl else "", c["first"], nick)
+
+    tiers = {}
+    for c in clues:
+        if consistent(c):
+            tiers.setdefault(c["source"], []).append(c)
+    for source in ("email", "document name", "email body"):
+        if tiers.get(source):
+            if source == "email":
+                return tiers[source][0]
+            return max(tiers[source], key=lambda c: len(c["first"]))
+    return {"source": "requested name", "detail": requested, "first": rf, "last": rl, "emails": []}
+
+def _person_folder_candidates(folders, last):
+    """Folders whose title starts with the last name ('Last, First'), plus legacy 'First Last' titles
+    ending with it. Returns [(folder, folder_first_name_or_empty)]."""
+    out = []
+    n = len(last)
+    for f in folders:
+        toks = _name_tokens(f.get("name"))
+        words = [t for t in toks if t != ","]
+        if words[:n] == last:
+            rest = words[n:]
+            out.append((f, rest[0] if rest else ""))
+        elif "," not in toks and len(words) > n and words[-n:] == last:
+            out.append((f, words[0]))
+    return out
+
+def _match_person_folders(first, last, folders, nick, contents_match=None):
+    """Spec'd folder rule. Returns [(folder, reason)] where reason is 'first name', 'nickname' or
+    'folder contents'. contents_match(list_of_folders) -> set of folder ids whose files mention the
+    person (by email or full name); only consulted for candidates not matched by name."""
+    cands = _person_folder_candidates(folders, last)
+    matches, rest = [], []
+    for f, ff in cands:
+        rel = _first_name_relation(first, ff, nick)
+        if rel:
+            matches.append((f, rel))
+        else:
+            rest.append(f)
+    if rest and contents_match:
+        hit = contents_match(rest) or set()
+        matches += [(f, "folder contents") for f in rest if f["id"] in hit]
+    return matches
+
+def _pdf_text(data):
+    if PdfReader is None or not data:
+        return ""
+    try:
+        import io
+        reader = PdfReader(io.BytesIO(data))
+        out = []
+        for page in reader.pages[:_PDF_MAX_PAGES]:
+            out.append(page.extract_text() or "")
+            if sum(len(x) for x in out) > _PDF_MAX_CHARS:
+                break
+        return "\n".join(out)[:_PDF_MAX_CHARS]
+    except Exception as e:
+        logger.warning(f"PDF text extraction failed: {e}")
+        return ""
+
+def _attachment_text(a):
+    if "_text" not in a:
+        mime = (a.get("mime") or "").lower()
+        if mime == "application/pdf" or a.get("filename", "").lower().endswith(".pdf"):
+            a["_text"] = _pdf_text(a.get("data"))
+        elif mime.startswith("text/"):
+            a["_text"] = (a.get("data") or b"").decode("utf-8", errors="replace")[:_PDF_MAX_CHARS]
+        else:
+            a["_text"] = ""
+    return a["_text"]
+
+def _lookup_person_by_email(email):
+    for p in get_snapshot("people.json"):
+        if email in {(p.get(k) or "").lower().strip() for k in ("email", "email2", "home_email")}:
+            return p
+    r = call_pipeline_api("GET", f"/people.json?conditions[email]={urllib.parse.quote(email)}&per_page=3")
+    if r["status"] == 200 and isinstance(r["data"], dict):
+        for p in r["data"].get("entries", []):
+            if (p.get("email") or "").lower().strip() == email:
+                return p
+    return None
+
+def _gather_identity_clues(requested, attachments):
+    """Ordered clues: email (sender, forwarded sender, attachment text → Pipeline person),
+    document name (attachment file names and PDF text), email body (subject + body)."""
+    em = _CURRENT_EMAIL or {}
+    body = em.get("body") or ""
+    texts = [(a.get("filename", ""), _attachment_text(a)) for a in (attachments or [])]
+    rf, rl = _split_person_name(requested)
+
+    sender = [em.get("from") or ""] + re.findall(r"^[>\s]*From:[^\n]*", body, re.M | re.I)
+    emails = []
+    for e in _extract_emails(" ".join(sender)) + [e for _, t in texts for e in _extract_emails(t)]:
+        if not _is_internal_email(e) and e not in emails:
+            emails.append(e)
+    clues, seen_ids = [], set()
+    for e in emails[:15]:
+        p = _lookup_person_by_email(e)
+        if not p or p.get("id") in seen_ids:
+            continue
+        seen_ids.add(p.get("id"))
+        pf, pl = _split_person_name(f"{p.get('first_name') or ''} {p.get('last_name') or ''}")
+        p_emails = [x for x in ((p.get(k) or "").lower().strip() for k in ("email", "email2", "home_email")) if x]
+        clues.append({"source": "email", "detail": f"{e} → Pipeline person {p.get('id')}",
+                      "first": pf, "last": pl, "emails": p_emails or [e], "person_id": p.get("id"),
+                      "display_first": (p.get("first_name") or "").strip(),
+                      "display_last": (p.get("last_name") or "").strip()})
+
+    def name_clues(source, label, text, last):
+        out = []
+        if last and rf:   # anchored search only with a first name to check it against
+            out += [{"source": source, "detail": label, "first": f, "last": last, "emails": []}
+                    for f in _names_with_last(text, last)]
+        out += [{"source": source, "detail": label, "first": f, "last": l, "emails": []}
+                for f, l in _names_signed(text)]
+        return out
+
+    for fname, text in texts:
+        stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", fname)
+        clues += name_clues("document name", f"file name '{fname}'", re.sub(r"[-_]+", " ", stem), rl)
+        clues += name_clues("document name", f"text of '{fname}'", text, rl)
+    clues += name_clues("email body", "email subject/body", f"{em.get('subject') or ''}\n{body}", rl)
+    return clues
+
+def _escape_drive_q(s):
+    return s.replace("\\", "\\\\").replace("'", "\\'")
+
+def _folders_mentioning(folders, terms):
+    """Ids of folders (among `folders`) holding a file whose title or text contains any of terms."""
+    terms = [t for t in terms if t]
+    if not folders or not terms:
+        return set()
+    parents = " or ".join(f"'{_escape_drive_q(f['id'])}' in parents" for f in folders)
+    text = " or ".join(f"fullText contains '\"{_escape_drive_q(t)}\"'" for t in terms)
+    files, err = _drive_list(f"trashed=false and ({parents}) and ({text})",
+                             fields="nextPageToken,files(id,name,parents)")
+    if err:
+        logger.warning(f"Folder contents search failed: {err}")
+        return set()
+    ids = {f["id"] for f in folders}
+    return {p for f in files for p in f.get("parents", []) if p in ids}
+
+def _resolve_person_folder(client_name, attachments, create_if_missing, create_new):
+    nick = _nickname_map()
+    try:
+        clues = _gather_identity_clues(client_name, attachments)
+    except Exception as e:
+        logger.warning(f"Identity clue gathering failed: {e}")
+        clues = []
+    ident = _pick_identity(client_name, clues, nick)
+    first, last = ident.get("first"), ident.get("last")
+    identity = {"source": ident["source"], "detail": ident.get("detail"),
+                "first_name": ident.get("display_first") or _display_part(client_name, [first] if first else []),
+                "last_name": ident.get("display_last") or _display_part(client_name, last or [])}
+    logger.info(f"Person folder identity for '{client_name}': {json.dumps(identity)}")
+    if not last:
+        return {"status": "error", "http_status": None, "identity": identity,
+                "body": "Could not determine the client's last name; ask Chad for the full name."}
+    folders, err = _list_client_folders()
+    if err:
+        return {"status": "error", "http_status": err["status"], "body": err["data"]}
+
+    def folder_entry(f, reason):
+        e = {k: v for k, v in _folder_result("", f).items() if k != "status"}
+        e["matched_by"] = reason
+        return e
+
+    if not first:
+        cands = [f for f, _ in _person_folder_candidates(folders, last)]
+        if cands:
+            return {"status": "ambiguous", "reason": "first_name_unknown", "identity": identity,
+                    "folders": [folder_entry(f, "last name only") for f in cands]}
+        return {"status": "error", "http_status": None, "identity": identity,
+                "body": "Could not determine the client's first name; ask Chad for the full name."}
+
+    full = f"{identity['first_name']} {identity['last_name']}"
+    terms = list(dict.fromkeys(ident.get("emails", []) + [full, f"{identity['last_name']}, {identity['first_name']}"]))
+    matches = _match_person_folders(first, last, folders, nick, lambda fs: _folders_mentioning(fs, terms))
+    if len(matches) > 1 and not create_new:
+        return {"status": "ambiguous", "reason": "multiple_person_folders", "identity": identity,
+                "folders": [folder_entry(f, r) for f, r in matches]}
+    if len(matches) == 1:
+        f, reason = matches[0]
+        out = _folder_result("exists", f)
+        out.update({"matched_by": reason, "identity": identity})
+        return out
+    if not create_if_missing and not create_new:
+        return {"status": "not_found", "searched_name": full, "identity": identity}
+    new_name = f"{identity['last_name']}, {identity['first_name']}"
+    r = _drive_request("POST", DRIVE_FILES_URL, params={"fields": "id,name"}, payload={
+        "name": new_name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [DRIVE_CLIENTS_FOLDER_ID],
+    })
+    if r["status"] != 200 or not isinstance(r["data"], dict):
+        return {"status": "error", "http_status": r["status"], "body": r["data"]}
+    out = _folder_result("created", r["data"])
+    out.update({"matched_by": "new folder", "identity": identity})
+    return out
+
+def _chosen_client_folder(folder_id):
+    """Folder Chad picked by id (after an ambiguous result). Must be a folder directly under CLIENTS."""
+    r = _drive_request("GET", f"{DRIVE_FILES_URL}/{folder_id}", params={"fields": "id,name,mimeType,parents,trashed"})
+    if r["status"] != 200 or not isinstance(r["data"], dict):
+        return {"status": "error", "http_status": r["status"], "body": r["data"]}
+    d = r["data"]
+    if d.get("mimeType") != "application/vnd.google-apps.folder" or d.get("trashed") \
+            or DRIVE_CLIENTS_FOLDER_ID not in (d.get("parents") or []):
+        return {"status": "error", "http_status": None, "body": f"{folder_id} is not a client folder under CLIENTS"}
+    out = _folder_result("exists", d)
+    out["matched_by"] = "folder chosen by Chad"
+    return out
+
+def ensure_client_folder(client_name, client_type, create_if_missing=True, create_new=False,
+                         folder_id=None, attachments=None):
+    if folder_id:
+        return _chosen_client_folder(str(folder_id).strip())
     client_name = " ".join((client_name or "").split())
     if not client_name:
         return {"status": "error", "http_status": None, "body": "client_name is required"}
     if client_type not in ("entity", "person"):
         return {"status": "error", "http_status": None, "body": "client_type must be 'entity' or 'person'"}
+    if client_type == "person":
+        return _resolve_person_folder(client_name, attachments, create_if_missing, create_new)
     folders, err = _list_client_folders()
     if err:
         return {"status": "error", "http_status": err["status"], "body": err["data"]}
@@ -500,13 +878,10 @@ def _drive_upload(folder_id, name, mime, data):
                       headers={"Content-Type": mime, "Content-Length": str(len(data))})
 
 def upload_to_client_folder(client_name, client_type, attachment_indexes=None, create_if_missing=True,
-                            create_new=False):
+                            create_new=False, folder_id=None):
     atts = list(_CURRENT_ATTACHMENTS)
     if not atts:
         return {"status": "no_attachments", "message": "This email has no attachments to file."}
-    folder = ensure_client_folder(client_name, client_type, create_if_missing, create_new)
-    if folder.get("status") not in ("exists", "created"):
-        return folder
     errors = []
     if attachment_indexes:
         by_index = {a["index"]: a for a in atts}
@@ -523,6 +898,10 @@ def upload_to_client_folder(client_name, client_type, attachment_indexes=None, c
                 errors.append({"index": i, "error": f"no attachment #{i} (email has {len(atts)})"})
     else:
         selected = atts
+    folder = ensure_client_folder(client_name, client_type, create_if_missing, create_new,
+                                  folder_id=folder_id, attachments=selected or atts)
+    if folder.get("status") not in ("exists", "created"):
+        return folder
     existing, err = _list_folder_files(folder["folder_id"])
     if err:
         return {"status": "error", "http_status": err["status"], "body": err["data"], "folder": folder}
@@ -850,25 +1229,27 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "ensure_client_folder",
-            "description": "Find or create the client's Google Drive folder inside Chad's CLIENTS folder. Only call when Chad explicitly asks to create/find/set up a client or Drive folder. Lists folders live (never cached). Returns status 'exists' or 'created' with folder_id, name, url; 'ambiguous' with a list of matching folders (nothing created) — if reason is 'near_match' the folders only resemble the name (e.g. 'Fund' for 'Fund II LLC') and nothing is created even with create_if_missing: ask Chad which folder to use or whether to create a new one; 'not_found' if create_if_missing is false and no match; or 'error' with http_status and body.",
+            "description": "Find or create the client's Google Drive folder inside Chad's CLIENTS folder. Only call when Chad explicitly asks to create/find/set up a client or Drive folder. Lists folders live (never cached). Returns status 'exists' or 'created' with folder_id, name, url; 'ambiguous' with a list of matching folders (nothing created) — if reason is 'near_match' the folders only resemble the name (e.g. 'Fund' for 'Fund II LLC') and nothing is created even with create_if_missing: ask Chad which folder to use or whether to create a new one; 'not_found' if create_if_missing is false and no match; or 'error' with http_status and body. For client_type 'person' the folder is resolved from the strongest identity clue (sender / attachment email addresses looked up in Pipeline, then full names in attachment file names and PDF text, then the email body) and matched by last name plus first name, nickname variant (Zach/Zachary) or folder contents; the result carries 'identity' {source, detail, first_name, last_name} and 'matched_by' ('first name', 'nickname', 'folder contents', 'new folder', 'folder chosen by Chad'); 'ambiguous' with reason 'multiple_person_folders' lists several matching folders, each with matched_by (nothing created).",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "client_name": {"type": "string", "description": "Full legal entity name exactly as known (e.g. 'Acme Capital Partners LLC'), or the person's name ('First Last' or 'Last, First')"},
                 "client_type": {"type": "string", "enum": ["entity", "person"], "description": "'entity' for a legal entity (folder named exactly as given); 'person' for a natural person (folder named 'Last, First')"},
                 "create_if_missing": {"type": "boolean", "description": "Create the folder if no match exists. Default true."},
-                "create_new": {"type": "boolean", "description": "Set true ONLY after a near_match result when Chad explicitly said to create a new folder. Ignores near matches and creates the folder (an exact/prefix match is still reused). Default false."}
+                "create_new": {"type": "boolean", "description": "Set true ONLY after a near_match result when Chad explicitly said to create a new folder. Ignores near matches and creates the folder (an exact/prefix match is still reused). Default false."},
+                "folder_id": {"type": "string", "description": "Drive folder id from a previous 'ambiguous' result. Set ONLY after Chad picked that folder; uses it directly (client_name/client_type are then ignored)."}
             }, "required": ["client_name", "client_type"]}}
         }
     },
     {
         "toolSpec": {
             "name": "upload_to_client_folder",
-            "description": "File attachments from the current email into a client's Google Drive folder (resolved like ensure_client_folder; partial entity names match by prefix). Only call when Chad explicitly asks to add/file/save documents. Uploads original bytes and filenames; never overwrites — a name clash is uploaded as 'name (2).ext' and flagged. Returns status 'uploaded' with folder, files [{index, name, file_id, url, renamed_due_to_duplicate}] and errors; or the folder status 'ambiguous' / 'not_found' / 'error' (nothing uploaded; 'ambiguous' with reason 'near_match' means only similar folder names exist — ask Chad which to use or whether to create new); or 'no_attachments'.",
+            "description": "File attachments from the current email into a client's Google Drive folder (resolved like ensure_client_folder; partial entity names match by prefix). Only call when Chad explicitly asks to add/file/save documents. Uploads original bytes and filenames; never overwrites — a name clash is uploaded as 'name (2).ext' and flagged. Returns status 'uploaded' with folder, files [{index, name, file_id, url, renamed_due_to_duplicate}] and errors; or the folder status 'ambiguous' / 'not_found' / 'error' (nothing uploaded; 'ambiguous' with reason 'near_match' means only similar folder names exist — ask Chad which to use or whether to create new); or 'no_attachments'. For client_type 'person' the folder (and the identity) is resolved from the strongest identity clue (sender / attachment email addresses looked up in Pipeline, then full names in attachment file names and PDF text, then the email body) and matched by last name plus first name, nickname variant (Zach/Zachary) or folder contents; the result carries 'identity' {source, detail, first_name, last_name} and 'matched_by' ('first name', 'nickname', 'folder contents', 'new folder', 'folder chosen by Chad'); 'ambiguous' with reason 'multiple_person_folders' lists several matching folders, each with matched_by (nothing created).",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "client_name": {"type": "string", "description": "Legal entity name (full or leading part, e.g. 'Preface Ventures'), or the person's name ('First Last' or 'Last, First')"},
                 "client_type": {"type": "string", "enum": ["entity", "person"], "description": "'entity' for a company folder; 'person' for a natural person's personal folder"},
                 "attachment_indexes": {"type": "array", "items": {"type": "integer"}, "description": "1-based indexes from the email's attachment inventory. Empty or omitted = all attachments."},
                 "create_if_missing": {"type": "boolean", "description": "Create the client folder if no match exists. Default true."},
-                "create_new": {"type": "boolean", "description": "Set true ONLY after a near_match result when Chad explicitly said to create a new folder. Default false."}
+                "create_new": {"type": "boolean", "description": "Set true ONLY after a near_match result when Chad explicitly said to create a new folder. Default false."},
+                "folder_id": {"type": "string", "description": "Drive folder id from a previous 'ambiguous' result. Set ONLY after Chad picked that folder; uses it directly (client_name/client_type are then ignored)."}
             }, "required": ["client_name", "client_type"]}}
         }
     },
@@ -2171,6 +2552,8 @@ def _execute_tool_inner(tool_name, tool_input):
             tool_input.get("client_type", ""),
             tool_input.get("create_if_missing", True),
             bool(tool_input.get("create_new", False)),
+            folder_id=tool_input.get("folder_id"),
+            attachments=list(_CURRENT_ATTACHMENTS),
         )
         logger.info(f"ensure_client_folder: {json.dumps(result)}")
         return result
@@ -2182,6 +2565,7 @@ def _execute_tool_inner(tool_name, tool_input):
             tool_input.get("attachment_indexes") or None,
             tool_input.get("create_if_missing", True),
             bool(tool_input.get("create_new", False)),
+            folder_id=tool_input.get("folder_id"),
         )
         logger.info(f"upload_to_client_folder: {json.dumps(result, default=str)}")
         return result
@@ -2287,8 +2671,9 @@ def send_reply(to_address, subject, body_text):
 # ── Main handler ──────────────────────────────────────────────────────────────
 def lambda_handler(event, context):
     logger.info(f"Event: {json.dumps(event)}")
-    global _CURRENT_ATTACHMENTS
+    global _CURRENT_ATTACHMENTS, _CURRENT_EMAIL
     _CURRENT_ATTACHMENTS = []
+    _CURRENT_EMAIL = {}
 
     # Manual test invocation
     if 'instruction' in event:
@@ -2443,6 +2828,7 @@ def lambda_handler(event, context):
         bcc_context = f"[Chad sent this to: {recipients}]\n\n" if recipients else ""
         instruction = f"Subject: {subject}\n\n{bcc_context}{text_body.strip()}" if text_body.strip() else subject
         _CURRENT_ATTACHMENTS = raw_attachments
+        _CURRENT_EMAIL = {"from": from_address, "subject": subject, "body": text_body}
         if raw_attachments:
             inventory = "; ".join(f"{a['index']}) {a['filename']} ({a['mime']}, {_fmt_size(a['size'])})"
                                   for a in raw_attachments)

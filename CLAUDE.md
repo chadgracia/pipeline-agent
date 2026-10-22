@@ -6,7 +6,7 @@ AWS Lambda that acts as a CRM assistant for Chad Gracia (Rainmaker Securities, F
 - `lambda_function.py` — the whole Lambda. Single file, ~1,800 lines. Entry point: `lambda_handler(event, context)` at the bottom.
 - `agent-system-prompt.txt` — the system prompt that drives the agent's reasoning. **Source of truth for agent behavior** — most "the agent did X wrong" fixes belong here, not in code.
 - `.github/workflows/sync-agent-prompt.yml` — on push to `main` touching `agent-system-prompt.txt`, syncs the file to `s3://pipeline-token/agent-system-prompt.txt`. Lambda reads it from there on every invocation.
-- No test suite. No `requirements.txt` (Lambda runtime provides `boto3`).
+- Tests: `python3 -m unittest discover tests` (helpers are extracted with `ast`, since importing the module hits S3). No `requirements.txt`: `boto3` comes from the Lambda runtime; `pypdf` (pinned in `deploy.yml`) and the vendored `names.csv` (nickname data) are added to the deploy zip.
 
 ## Runtime
 - LLM: Amazon Bedrock, `us.anthropic.claude-sonnet-4-6` (`lambda_function.py:1559`).
@@ -21,7 +21,7 @@ AWS Lambda that acts as a CRM assistant for Chad Gracia (Rainmaker Securities, F
 
 ## Deploy
 - **Prompt changes** (`agent-system-prompt.txt`): commit to `main` → GitHub Action syncs to S3 → live on next Lambda invocation. No manual step.
-- **Code changes** (`lambda_function.py`): Deploys are automatic: push/merge to main triggers `.github/workflows/deploy.yml`, which zips `lambda_function.py` and runs `aws lambda update-function-code` on the pipeline-agent Lambda via the `github-actions-deploy` OIDC role. No manual release step.
+- **Code changes** (`lambda_function.py`): Deploys are automatic: push/merge to main triggers `.github/workflows/deploy.yml`, which builds a zip of `lambda_function.py` + `names.csv` + `pypdf` and runs `aws lambda update-function-code` on the pipeline-agent Lambda via the `github-actions-deploy` OIDC role. No manual release step.
 
 ## Pipeline CRM custom-field IDs (most-used)
 - `custom_label_3796440` — CEF Submitted: 6600515=Yes, 6600514=Pending, 6600513=No, 6600516=N/A
@@ -35,6 +35,7 @@ AWS Lambda that acts as a CRM assistant for Chad Gracia (Rainmaker Securities, F
 - Workflow: commit, merge directly to main, and push. No PRs or feature branches unless a task explicitly says otherwise (e.g. security rotations that need an env var updated first).
 - Commits: write the **why**, not the what. Squash on merge.
 - The S3 bucket name and prompt-sync workflow are committed convention — don't rename without coordinating an AWS-side rename.
+- Person client folders in Drive are resolved by `_resolve_person_folder` (identity clues: Pipeline email lookup > attachment file name / PDF text > email body; folder match: last name + first name, nickname via `names.csv`, or folder contents). Ambiguity returns candidates and creates nothing.
 - Person records have three email slots: `email` (primary work), `email2`, `home_email`. Lookup and dedup paths should check all three (the AWS-signup handler near `lambda_function.py:1674` is the one remaining primary-only check — flagged as a known gap).
 - Pipeline CRM rejects numeric fields containing commas — always strip before sending.
 - `custom_label_*__remove` is the convention for removing individual options from a multi-select in `update_person` / `update_deal`.
