@@ -7,6 +7,7 @@ import logging
 import re
 import os
 import time
+import difflib
 import unicodedata
 from datetime import date
 
@@ -715,7 +716,7 @@ def _folders_mentioning(folders, terms):
     ids = {f["id"] for f in folders}
     return {p for f in files for p in f.get("parents", []) if p in ids}
 
-def _resolve_person_folder(client_name, attachments, create_if_missing, create_new):
+def _resolve_person_folder(client_name, attachments, create_if_missing, create_new, close_match_review=None):
     nick = _nickname_map()
     try:
         clues = _gather_identity_clues(client_name, attachments)
@@ -759,9 +760,106 @@ def _resolve_person_folder(client_name, attachments, create_if_missing, create_n
         out = _folder_result("exists", f)
         out.update({"matched_by": reason, "identity": identity})
         return out
+    close = _close_person_folders(first, last, folders, nick, {f["id"] for f, _ in matches})
     if not create_if_missing and not create_new:
-        return {"status": "not_found", "searched_name": full, "identity": identity}
+        return {"status": "not_found", "searched_name": full, "identity": identity,
+                "close_folders": _close_entries(close)}
     new_name = f"{identity['last_name']}, {identity['first_name']}"
+    return _create_client_folder(new_name, close, close_match_review, create_new,
+                                 {"matched_by": "new folder", "identity": identity})
+
+# ── Close-name check (runs before any new client folder is created) ──────────
+# Like RULE 13's company duplicate ladder: a new folder is only created once the agent has reviewed
+# every close-named folder (or Chad said to create new), and the creation is always disclosed.
+_ENTITY_DESCRIPTORS = {"holdings", "group", "technologies", "technology", "tech", "labs", "systems",
+                       "robotics", "dynamics", "industries", "networks", "computing", "sciences", "bio",
+                       "health", "space", "energy", "motors", "software", "solutions", "ventures",
+                       "partners", "capital", "ai", "fund", "trust", "family", "the", "and", "of"}
+_GENERIC_FIRST_WORDS = {"new", "global", "american", "first", "united", "international", "national",
+                        "the", "north", "south", "east", "west", "general", "great"}
+_CLOSE_RATIO = 0.8
+
+def _similar(a, b, ratio=_CLOSE_RATIO):
+    return bool(a) and bool(b) and difflib.SequenceMatcher(None, a, b).ratio() >= ratio
+
+def _parse_person_folder(name):
+    """(first, [last...], words) for 'Last, First ...' or 'First ... Last' folder titles."""
+    toks = [t for t in _name_tokens(name) if t not in _NAME_SUFFIXES]
+    words = [t for t in toks if t != ","]
+    if "," in toks:
+        i = toks.index(",")
+        last = [t for t in toks[:i] if t != ","]
+        after = [t for t in toks[i + 1:] if t != ","]
+        return (after[0] if after else ""), last, words
+    if len(words) >= 2:
+        return words[0], words[-1:], words
+    return "", words, words
+
+def _close_person_folders(first, last, folders, nick, exclude_ids=()):
+    """Folders that might be the same person but did not match outright. Returns [(folder, why)]."""
+    out = []
+    lj = " ".join(last)
+    for f in folders:
+        if f["id"] in exclude_ids:
+            continue
+        ff, fl, words = _parse_person_folder(f.get("name"))
+        first_ok = (not ff) or _first_names_consistent(first, ff, nick) or ff[:1] == (first or "")[:1]
+        if fl == last:
+            why = "same last name"
+        elif all(t in words for t in last):
+            why = "contains the last name"
+        elif _similar(" ".join(fl), lj) and first_ok:
+            why = "similar last name spelling"
+        elif ff and _first_names_consistent(first, ff, nick) and any(_similar(w, lj) for w in words):
+            why = "same first name, similar last name"
+        else:
+            continue
+        out.append((f, why))
+    return out
+
+def _entity_root(name):
+    toks = _folder_tokens(name, drop_suffixes=False)
+    root = [t for t in toks if t not in _ENTITY_SUFFIXES and t not in _ENTITY_DESCRIPTORS]
+    return root or toks
+
+def _close_entity_folders(name, folders, near=(), exclude_ids=()):
+    """Folders that might be the same entity under another name form. Returns [(folder, why)]."""
+    near_ids = {f["id"] for f in near}
+    root = _entity_root(name)
+    flat = " ".join(_folder_tokens(name))
+    out = []
+    for f in folders:
+        if f["id"] in exclude_ids or not _folder_tokens(f.get("name")):
+            continue
+        froot = _entity_root(f.get("name"))
+        n = min(len(root), len(froot))
+        if f["id"] in near_ids:
+            why = "similar name"
+        elif n and root[:n] == froot[:n]:
+            why = "same root name"
+        elif root and froot and root[0] == froot[0] and len(root[0]) >= 4 and root[0] not in _GENERIC_FIRST_WORDS:
+            why = "same first word"
+        elif _similar(" ".join(_folder_tokens(f.get("name"))), flat, 0.85):
+            why = "similar spelling"
+        else:
+            continue
+        out.append((f, why))
+    return out
+
+def _close_entries(close):
+    return [{**{k: v for k, v in _folder_result("", f).items() if k != "status"}, "why_close": why}
+            for f, why in close]
+
+def _create_client_folder(new_name, close, close_match_review, create_new, extra=None):
+    """Creates the folder unless close-named folders exist and nobody reviewed them. Every result that
+    creates carries close_name_check and a disclosure line the agent must put in its reply."""
+    extra = dict(extra or {})
+    review = (close_match_review or "").strip()
+    if close and not review and not create_new:
+        return {"status": "close_matches", "proposed_name": new_name, "folders": _close_entries(close),
+                "message": "Nothing created. Review each folder: reuse it (folder_id) if it is the same client, "
+                           "ask Chad if unsure, or call again with close_match_review if every one is a "
+                           "different client.", **extra}
     r = _drive_request("POST", DRIVE_FILES_URL, params={"fields": "id,name"}, payload={
         "name": new_name,
         "mimeType": "application/vnd.google-apps.folder",
@@ -770,7 +868,16 @@ def _resolve_person_folder(client_name, attachments, create_if_missing, create_n
     if r["status"] != 200 or not isinstance(r["data"], dict):
         return {"status": "error", "http_status": r["status"], "body": r["data"]}
     out = _folder_result("created", r["data"])
-    out.update({"matched_by": "new folder", "identity": identity})
+    if not close:
+        check = "no close names found"
+    elif review:
+        check = f"compared against {', '.join(f['name'] for f, _ in close)} — {review}"
+    else:
+        check = f"close names {', '.join(f['name'] for f, _ in close)} — Chad asked to create a new folder"
+    out.update(extra)
+    out["close_name_check"] = {"compared_against": _close_entries(close), "review": review or None,
+                               "created_on_chads_instruction": bool(create_new and not review)}
+    out["disclosure"] = f"NEW FOLDER CREATED: {out['name']} — close-name check: {check}"
     return out
 
 def _chosen_client_folder(folder_id):
@@ -787,7 +894,7 @@ def _chosen_client_folder(folder_id):
     return out
 
 def ensure_client_folder(client_name, client_type, create_if_missing=True, create_new=False,
-                         folder_id=None, attachments=None):
+                         folder_id=None, attachments=None, close_match_review=None):
     if folder_id:
         return _chosen_client_folder(str(folder_id).strip())
     client_name = " ".join((client_name or "").split())
@@ -796,31 +903,21 @@ def ensure_client_folder(client_name, client_type, create_if_missing=True, creat
     if client_type not in ("entity", "person"):
         return {"status": "error", "http_status": None, "body": "client_type must be 'entity' or 'person'"}
     if client_type == "person":
-        return _resolve_person_folder(client_name, attachments, create_if_missing, create_new)
+        return _resolve_person_folder(client_name, attachments, create_if_missing, create_new, close_match_review)
     folders, err = _list_client_folders()
     if err:
         return {"status": "error", "http_status": err["status"], "body": err["data"]}
     matches, near = _match_client_folders(client_name, client_type, folders)
-    if near and not create_new:
-        # Similar-but-not-equal names (e.g. "Fund II LLC" vs "Fund"): never auto-pick or create; Chad decides.
-        return {"status": "ambiguous", "reason": "near_match", "searched_name": client_name,
-                "folders": [{k: v for k, v in _folder_result("", f).items() if k != "status"} for f in near]}
     if len(matches) > 1:
         return {"status": "ambiguous",
                 "folders": [{k: v for k, v in _folder_result("", f).items() if k != "status"} for f in matches]}
     if matches:
         return _folder_result("exists", matches[0])
+    # Similar-but-not-equal names (e.g. "Fund II LLC" vs "Fund"): never auto-pick; reviewed before creating.
+    close = _close_entity_folders(client_name, folders, near)
     if not create_if_missing and not create_new:
-        return {"status": "not_found", "searched_name": client_name}
-    new_name = client_name if client_type == "entity" else _person_folder_name(client_name)
-    r = _drive_request("POST", DRIVE_FILES_URL, params={"fields": "id,name"}, payload={
-        "name": new_name,
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [DRIVE_CLIENTS_FOLDER_ID],
-    })
-    if r["status"] != 200 or not isinstance(r["data"], dict):
-        return {"status": "error", "http_status": r["status"], "body": r["data"]}
-    return _folder_result("created", r["data"])
+        return {"status": "not_found", "searched_name": client_name, "close_folders": _close_entries(close)}
+    return _create_client_folder(client_name, close, close_match_review, create_new)
 
 # ── Drive file upload / rename ────────────────────────────────────────────────
 DRIVE_UPLOAD_URL         = "https://www.googleapis.com/upload/drive/v3/files"
@@ -878,7 +975,7 @@ def _drive_upload(folder_id, name, mime, data):
                       headers={"Content-Type": mime, "Content-Length": str(len(data))})
 
 def upload_to_client_folder(client_name, client_type, attachment_indexes=None, create_if_missing=True,
-                            create_new=False, folder_id=None):
+                            create_new=False, folder_id=None, close_match_review=None):
     atts = list(_CURRENT_ATTACHMENTS)
     if not atts:
         return {"status": "no_attachments", "message": "This email has no attachments to file."}
@@ -899,7 +996,8 @@ def upload_to_client_folder(client_name, client_type, attachment_indexes=None, c
     else:
         selected = atts
     folder = ensure_client_folder(client_name, client_type, create_if_missing, create_new,
-                                  folder_id=folder_id, attachments=selected or atts)
+                                  folder_id=folder_id, attachments=selected or atts,
+                                  close_match_review=close_match_review)
     if folder.get("status") not in ("exists", "created"):
         return folder
     existing, err = _list_folder_files(folder["folder_id"])
@@ -1229,27 +1327,29 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "ensure_client_folder",
-            "description": "Find or create the client's Google Drive folder inside Chad's CLIENTS folder. Only call when Chad explicitly asks to create/find/set up a client or Drive folder. Lists folders live (never cached). Returns status 'exists' or 'created' with folder_id, name, url; 'ambiguous' with a list of matching folders (nothing created) — if reason is 'near_match' the folders only resemble the name (e.g. 'Fund' for 'Fund II LLC') and nothing is created even with create_if_missing: ask Chad which folder to use or whether to create a new one; 'not_found' if create_if_missing is false and no match; or 'error' with http_status and body. For client_type 'person' the folder is resolved from the strongest identity clue (sender / attachment email addresses looked up in Pipeline, then full names in attachment file names and PDF text, then the email body) and matched by last name plus first name, nickname variant (Zach/Zachary) or folder contents; the result carries 'identity' {source, detail, first_name, last_name} and 'matched_by' ('first name', 'nickname', 'folder contents', 'new folder', 'folder chosen by Chad'); 'ambiguous' with reason 'multiple_person_folders' lists several matching folders, each with matched_by (nothing created).",
+            "description": "Find or create the client's Google Drive folder inside Chad's CLIENTS folder. Only call when Chad explicitly asks to create/find/set up a client or Drive folder. Lists folders live (never cached). Returns status 'exists' or 'created' with folder_id, name, url; 'ambiguous' with a list of matching folders (nothing created) ; 'close_matches' when no folder matches outright but close-named folders exist (nothing created; each has why_close) — review them per the close-name check rule; 'not_found' if create_if_missing is false and no match (with close_folders); 'created' results carry close_name_check and a 'disclosure' line that must appear in the reply; or 'error' with http_status and body. For client_type 'person' the folder is resolved from the strongest identity clue (sender / attachment email addresses looked up in Pipeline, then full names in attachment file names and PDF text, then the email body) and matched by last name plus first name, nickname variant (Zach/Zachary) or folder contents; the result carries 'identity' {source, detail, first_name, last_name} and 'matched_by' ('first name', 'nickname', 'folder contents', 'new folder', 'folder chosen by Chad'); 'ambiguous' with reason 'multiple_person_folders' lists several matching folders, each with matched_by (nothing created).",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "client_name": {"type": "string", "description": "Full legal entity name exactly as known (e.g. 'Acme Capital Partners LLC'), or the person's name ('First Last' or 'Last, First')"},
                 "client_type": {"type": "string", "enum": ["entity", "person"], "description": "'entity' for a legal entity (folder named exactly as given); 'person' for a natural person (folder named 'Last, First')"},
                 "create_if_missing": {"type": "boolean", "description": "Create the folder if no match exists. Default true."},
-                "create_new": {"type": "boolean", "description": "Set true ONLY after a near_match result when Chad explicitly said to create a new folder. Ignores near matches and creates the folder (an exact/prefix match is still reused). Default false."},
-                "folder_id": {"type": "string", "description": "Drive folder id from a previous 'ambiguous' result. Set ONLY after Chad picked that folder; uses it directly (client_name/client_type are then ignored)."}
+                "create_new": {"type": "boolean", "description": "Set true ONLY when Chad explicitly said to create a new folder despite close/ambiguous matches. Skips the close-name review (an exact/prefix match is still reused). Default false."},
+                "folder_id": {"type": "string", "description": "Drive folder id of an existing client folder: one Chad picked from an 'ambiguous' result, or one you judged to be the same client after a 'close_matches' result. Uses it directly (client_name/client_type are then ignored)."},
+                "close_match_review": {"type": "string", "description": "Set ONLY after a 'close_matches' result when every listed folder is clearly a different client: one line per folder, '<folder name>: different client because <evidence>'. The folder is then created and the review is echoed in the disclosure."}
             }, "required": ["client_name", "client_type"]}}
         }
     },
     {
         "toolSpec": {
             "name": "upload_to_client_folder",
-            "description": "File attachments from the current email into a client's Google Drive folder (resolved like ensure_client_folder; partial entity names match by prefix). Only call when Chad explicitly asks to add/file/save documents. Uploads original bytes and filenames; never overwrites — a name clash is uploaded as 'name (2).ext' and flagged. Returns status 'uploaded' with folder, files [{index, name, file_id, url, renamed_due_to_duplicate}] and errors; or the folder status 'ambiguous' / 'not_found' / 'error' (nothing uploaded; 'ambiguous' with reason 'near_match' means only similar folder names exist — ask Chad which to use or whether to create new); or 'no_attachments'. For client_type 'person' the folder (and the identity) is resolved from the strongest identity clue (sender / attachment email addresses looked up in Pipeline, then full names in attachment file names and PDF text, then the email body) and matched by last name plus first name, nickname variant (Zach/Zachary) or folder contents; the result carries 'identity' {source, detail, first_name, last_name} and 'matched_by' ('first name', 'nickname', 'folder contents', 'new folder', 'folder chosen by Chad'); 'ambiguous' with reason 'multiple_person_folders' lists several matching folders, each with matched_by (nothing created).",
+            "description": "File attachments from the current email into a client's Google Drive folder (resolved like ensure_client_folder; partial entity names match by prefix). Only call when Chad explicitly asks to add/file/save documents. Uploads original bytes and filenames; never overwrites — a name clash is uploaded as 'name (2).ext' and flagged. Returns status 'uploaded' with folder, files [{index, name, file_id, url, renamed_due_to_duplicate}] and errors; or the folder status 'ambiguous' / 'close_matches' / 'not_found' / 'error' (nothing uploaded; 'close_matches' means no folder matched outright but close-named ones exist — review them per the close-name check rule); or 'no_attachments'. If a new folder was created, folder.disclosure must appear in the reply. For client_type 'person' the folder (and the identity) is resolved from the strongest identity clue (sender / attachment email addresses looked up in Pipeline, then full names in attachment file names and PDF text, then the email body) and matched by last name plus first name, nickname variant (Zach/Zachary) or folder contents; the result carries 'identity' {source, detail, first_name, last_name} and 'matched_by' ('first name', 'nickname', 'folder contents', 'new folder', 'folder chosen by Chad'); 'ambiguous' with reason 'multiple_person_folders' lists several matching folders, each with matched_by (nothing created).",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "client_name": {"type": "string", "description": "Legal entity name (full or leading part, e.g. 'Preface Ventures'), or the person's name ('First Last' or 'Last, First')"},
                 "client_type": {"type": "string", "enum": ["entity", "person"], "description": "'entity' for a company folder; 'person' for a natural person's personal folder"},
                 "attachment_indexes": {"type": "array", "items": {"type": "integer"}, "description": "1-based indexes from the email's attachment inventory. Empty or omitted = all attachments."},
                 "create_if_missing": {"type": "boolean", "description": "Create the client folder if no match exists. Default true."},
-                "create_new": {"type": "boolean", "description": "Set true ONLY after a near_match result when Chad explicitly said to create a new folder. Default false."},
-                "folder_id": {"type": "string", "description": "Drive folder id from a previous 'ambiguous' result. Set ONLY after Chad picked that folder; uses it directly (client_name/client_type are then ignored)."}
+                "create_new": {"type": "boolean", "description": "Set true ONLY when Chad explicitly said to create a new folder despite close/ambiguous matches. Default false."},
+                "folder_id": {"type": "string", "description": "Drive folder id of an existing client folder: one Chad picked from an 'ambiguous' result, or one you judged to be the same client after a 'close_matches' result. Uses it directly (client_name/client_type are then ignored)."},
+                "close_match_review": {"type": "string", "description": "Set ONLY after a 'close_matches' result when every listed folder is clearly a different client: one line per folder, '<folder name>: different client because <evidence>'. The folder is then created and the review is echoed in the disclosure."}
             }, "required": ["client_name", "client_type"]}}
         }
     },
@@ -2554,6 +2654,7 @@ def _execute_tool_inner(tool_name, tool_input):
             bool(tool_input.get("create_new", False)),
             folder_id=tool_input.get("folder_id"),
             attachments=list(_CURRENT_ATTACHMENTS),
+            close_match_review=tool_input.get("close_match_review"),
         )
         logger.info(f"ensure_client_folder: {json.dumps(result)}")
         return result
@@ -2566,6 +2667,7 @@ def _execute_tool_inner(tool_name, tool_input):
             tool_input.get("create_if_missing", True),
             bool(tool_input.get("create_new", False)),
             folder_id=tool_input.get("folder_id"),
+            close_match_review=tool_input.get("close_match_review"),
         )
         logger.info(f"upload_to_client_folder: {json.dumps(result, default=str)}")
         return result

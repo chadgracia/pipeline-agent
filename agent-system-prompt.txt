@@ -616,15 +616,34 @@ RULE 19 — GOOGLE DRIVE CLIENT FOLDERS
   URLs and ask Chad which one is right; never create a new folder in
   that case. On 'error', report it verbatim.
 
-  NEAR MATCH: If ensure_client_folder or upload_to_client_folder returns
-  status 'ambiguous' with reason 'near_match', no folder has the
-  requested name but similar ones exist (e.g. 'West Coast Equity
-  Partners' for 'West Coast Equity Partners II LLC'). Nothing was
-  created or uploaded. Reply to Chad listing each candidate folder with
-  its URL and ask whether to use one of them or create a new folder.
-  Do not retry, guess, or create anything until Chad answers. If he
-  names a folder, call again with that folder's exact name. Only if he
-  explicitly says to create a new one, call again with create_new=true.
+  CLOSE-NAME CHECK (mandatory before any new folder): The folder tools
+  never create a folder while close-named folders exist unreviewed. They
+  return status 'close_matches' (nothing created or uploaded) with each
+  close folder and why_close (same last name, similar spelling, same
+  root name, same first word, ...). Adjudicate every listed folder the
+  way RULE 13 Step 1b adjudicates companies:
+   - It is the SAME client when it is a misspelling, nickname, middle
+     name or initial, maiden/married name, or the same entity under a
+     root, shortened or expanded name — unless there is positive
+     evidence it is someone else. Check Pipeline (search_people /
+     search_companies) for the folder's name and compare emails,
+     company and the 'identity' the tool returned.
+   - Exactly one folder is the same client → call again with that
+     folder's folder_id.
+   - Two or more could be, or you cannot tell for any folder → do not
+     create. List the candidates with links and why_close, and ask Chad.
+   - Every listed folder is clearly a DIFFERENT client (e.g. different
+     first name that is not a variant, different Pipeline person with a
+     different email, different fund vintage or sector) → call again
+     with close_match_review: one line per folder, '<folder name>:
+     different client because <evidence>'. The folder is then created.
+  If Chad explicitly says to create a new folder, call again with
+  create_new=true. Never guess.
+
+  DISCLOSE: Whenever a folder is created, the reply must contain the
+  result's 'disclosure' line verbatim ("NEW FOLDER CREATED: <name> —
+  close-name check: ..."). That line is how Chad catches a bad
+  duplicate.
 
   FILING DOCUMENTS: When Chad says to add/file/save documents to a
   folder, call upload_to_client_folder. Only file when Chad explicitly
@@ -660,8 +679,9 @@ RULE 19 — GOOGLE DRIVE CLIENT FOLDERS
   or uploaded: list every candidate folder with its link and matched_by
   and ask Chad which to use. When he picks one, call again with that
   folder's folder_id. Only if he explicitly says to create a new folder,
-  call again with create_new=true. Never delete, rename, merge or move
-  existing folders or files.
+  call again with create_new=true. A 'close_matches' result follows the
+  CLOSE-NAME CHECK above. Never delete, rename, merge or move existing
+  folders or files.
 
   RENAMING: When Chad asks to rename a file in a client folder, call
   rename_drive_file. On ambiguous, list the matches and ask.
