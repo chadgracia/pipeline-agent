@@ -1388,6 +1388,64 @@ def format_deal_amount(amount):
             return f"${_short(amount / div)}{unit}"
     return f"${_short(amount / 1_000_000_000)}B"
 
+# ── Web offer/bid structure ───────────────────────────────────────────────────
+# Forwarded "New web offer/bid" emails (chadgracia/web-bid) carry the submitter's own Structure
+# checkboxes. That line — never the person's or company's name or org type — decides Structure.
+_WEB_OFFER_STRUCTURES = ("Direct", "Fund", "Forward")
+
+def _parse_web_offer(subject, body):
+    """{'side', 'company', 'company_id', 'structure', 'structure_stated'} for a web-bid notification
+    (also when forwarded / quoted), else None."""
+    text = "\n".join(re.sub(r"^[>\s]+", "", line) for line in (body or "").splitlines())
+    subj = re.search(r"New web (offer|bid):\s*(.+?)\s*@", subject or "", re.I) \
+        or re.search(r"New web (offer|bid):\s*(.+?)\s*@", text, re.I)
+    if not subj and "submitted through the web-bid page" not in text:
+        return None
+    side = None
+    m = re.search(r"firm (sell offer|buy bid) was submitted", text, re.I)
+    if m:
+        side = "sell" if m.group(1).lower().startswith("sell") else "buy"
+    elif subj:
+        side = "sell" if subj.group(1).lower() == "offer" else "buy"
+    company, company_id = (subj.group(2).strip() if subj else None), None
+    m = re.search(r"^Company:\s*(.+?)\s*(?:\(id\s*(\d*)\))?\s*$", text, re.M)
+    if m:
+        company, company_id = m.group(1).strip(), (m.group(2) or None)
+    m = re.search(r"^Structure:\s*(.*)$", text, re.M)
+    vals = []
+    if m:
+        for part in re.split(r"[,/+&]|\band\b", m.group(1)):
+            part = part.strip().lower()
+            for v in _WEB_OFFER_STRUCTURES:
+                if part.startswith(v.lower()) or (v == "Fund" and part == "spv"):
+                    if v not in vals:
+                        vals.append(v)
+    return {"side": side, "company": company, "company_id": company_id,
+            "structure": vals, "structure_stated": bool(vals)}
+
+def _offer_structure(offer):
+    """(structure list, source label, notice or None) for a parsed web offer/bid."""
+    vals = list(offer.get("structure") or [])
+    if not vals:
+        return ["Direct"], "default, not stated", "Structure not stated, defaulted to Direct, please confirm."
+    if "Direct" in vals and "Fund" in vals and offer.get("side") == "sell":
+        # One holding can't be both; the form allowed ticking both, so don't guess between them.
+        rest = [v for v in vals if v not in ("Direct", "Fund")]
+        return (["Direct"] + rest, "default, offer form listed both Direct and Fund",
+                "Offer form listed both Direct and Fund; defaulted to Direct, please confirm.")
+    return vals, "from offer form", None
+
+def _offer_applies(offer, company_id, company_name, deal_type):
+    """True when the deal being created is the one the web offer/bid describes."""
+    if not offer:
+        return False
+    if offer.get("side") and str(deal_type or "").lower() not in ("", offer["side"]):
+        return False
+    if offer.get("company_id") and str(offer["company_id"]) == str(company_id):
+        return True
+    norm = lambda x: re.sub(r"[^a-z0-9]", "", (x or "").lower())
+    return bool(offer.get("company")) and norm(offer["company"]) == norm(company_name)
+
 def build_deal_name(company, min_size, max_size, deal_type):
     """Deterministic deal name: '{Company}: {Min} - {Max} {Buy|Sell}'.
     Min equal to max → '{Company}: {Max} {Side}'; min missing/zero → '{Company}: up to {Max} {Side}';
@@ -2468,6 +2526,16 @@ def _execute_tool_inner(tool_name, tool_input):
             company_name = (tool_input.get("name") or "").split(":")[0].strip() or "Unknown"
         deal_name = build_deal_name(company_name, tool_input.get("min_size"), tool_input.get("max_size"), deal_type)
 
+        # Web offer/bid: Structure comes from the submitter's form, never from names or org types.
+        structure_source, structure_notice = None, None
+        offer = _parse_web_offer((_CURRENT_EMAIL or {}).get("subject"), (_CURRENT_EMAIL or {}).get("body"))
+        if _offer_applies(offer, tool_input["company_id"], company_name, deal_type):
+            struct_vals_offer, structure_source, structure_notice = _offer_structure(offer)
+            if sorted(struct_vals_offer) != sorted(struct_vals):
+                logger.info(f"create_deal: structure {struct_vals} replaced by web offer value {struct_vals_offer}")
+            struct_vals = struct_vals_offer
+            custom_fields["custom_label_3064360"] = [structure_map[s] for s in struct_vals if s in structure_map]
+
         payload = {"deal": {
             "name": deal_name,
             "company_id": tool_input["company_id"],
@@ -2484,6 +2552,9 @@ def _execute_tool_inner(tool_name, tool_input):
                 "deal_id": deal_id,
                 "deal_url": f"https://app.pipelinecrm.com/deals/{deal_id}",
                 "deal_name": deal_name,
+                "structure": struct_vals,
+                **({"structure_source": structure_source} if structure_source else {}),
+                **({"structure_notice": structure_notice} if structure_notice else {}),
                 "message": "Deal created successfully."
             }
         return {"error": f"HTTP {result['status']}", "detail": result.get("data")}
