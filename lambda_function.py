@@ -323,12 +323,52 @@ _ENTITY_FORM_RE = re.compile(
 PERSON_ADDRESS_FIELDS = {f"{p}_{s}" for p in ("work", "home")
                          for s in ("address_1", "address_2", "street", "city", "state", "postal_code", "country")}
 
-def current_email_is_entity_form():
-    """True when the email being processed carries an entity IQF/CEF (subject, body or attachment)."""
+def entity_form_trigger():
+    """What marks the current email as an entity IQF/CEF, e.g. "attachment 'iqf.pdf': 'Principal
+    Place of Business'", or None. Logged whenever the entity guard drops data."""
     em = _CURRENT_EMAIL or {}
-    texts = [em.get("subject") or "", em.get("body") or ""]
-    texts += [_attachment_text(a) for a in _CURRENT_ATTACHMENTS]
-    return any(_ENTITY_FORM_RE.search(t) for t in texts if t)
+    sources = [("subject", em.get("subject")), ("body", em.get("body"))]
+    sources += [(f"attachment {a.get('filename', '?')!r}", _attachment_text(a)) for a in _CURRENT_ATTACHMENTS]
+    for where, text in sources:
+        m = _ENTITY_FORM_RE.search(text or "")
+        if m:
+            return f"{where}: {' '.join(m.group(0).split())!r}"
+    return None
+
+def _same_value(sent, saved):
+    return " ".join(str(sent or "").split()).lower() == " ".join(str(saved or "").split()).lower()
+
+def put_company_checked(company_id, payload, check_keys):
+    """PUT the company, then confirm each of `check_keys` (address/phone) actually saved.
+    A key missing from a GET is still sent — Pipeline omits null-valued keys. A key is
+    reported unknown only if the PUT rejects it by name or the follow-up GET shows it
+    didn't save. Returns (put_result, unknown_keys)."""
+    url = f"/companies/{company_id}.json"
+    std = payload["company"]
+    unknown = []
+    result = call_pipeline_api("PUT", url, payload)
+    if result["status"] != 200:
+        named = [k for k in check_keys if k in std and k in json.dumps(result.get("data"))]
+        if not named:
+            return result, unknown
+        unknown += named
+        for k in named:
+            std.pop(k)
+        if not std and not payload["company"].get("custom_fields"):
+            return {"status": 200, "data": {}}, unknown
+        result = call_pipeline_api("PUT", url, payload)
+        if result["status"] != 200:
+            return result, unknown
+    sent = {k: std[k] for k in check_keys if k in std}
+    if sent:
+        after = call_pipeline_api("GET", url)
+        if after["status"] == 200 and isinstance(after["data"], dict):
+            unknown += [k for k, v in sent.items() if not _same_value(v, after["data"].get(k))]
+        else:
+            logger.warning(f"update_company: could not re-read company {company_id} to confirm {list(sent)}")
+    if unknown:
+        logger.warning(f"update_company: company {company_id} address/phone keys not saved: {unknown}")
+    return result, unknown
 
 # ── Call Pipeline CRM API ─────────────────────────────────────────────────────
 def call_pipeline_api(method, endpoint, payload=None):
@@ -1871,12 +1911,15 @@ def _execute_tool_inner(tool_name, tool_input):
         phone_flags = guard_phone_fields(fields, phone_country)
         # Entity IQF/CEF: the Principal Place of Business belongs on the linked company
         # (update_company), never on the contact person's work/home address.
-        blocked_address = []
-        if any(k in PERSON_ADDRESS_FIELDS for k in fields) and current_email_is_entity_form():
+        blocked_address, entity_trigger = [], None
+        if any(k in PERSON_ADDRESS_FIELDS for k in fields):
+            entity_trigger = entity_form_trigger()
+        if entity_trigger:
             blocked_address = sorted(k for k in fields if k in PERSON_ADDRESS_FIELDS)
             for k in blocked_address:
                 fields.pop(k)
-            logger.warning(f"entity-form guard: person {tool_input['person_id']} address fields dropped: {blocked_address}")
+            logger.warning(f"entity-form guard: person {tool_input['person_id']} — dropped {blocked_address}; "
+                           f"triggered by {entity_trigger}")
         # Split standard fields from custom fields
         standard = {}
         custom = {}
@@ -1918,6 +1961,9 @@ def _execute_tool_inner(tool_name, tool_input):
             notes["phone_flags"] = phone_flags
         if blocked_address:
             notes["blocked_address_fields"] = blocked_address
+            notes["entity_guard_fired"] = (f"Entity-form guard dropped person address fields {blocked_address} "
+                                           f"(detected from {entity_trigger}). Mention this in your reply so Chad "
+                                           f"can catch a false positive.")
             notes["entity_form_address"] = ("Entity form: person address fields were NOT written. Write the Principal Place "
                                             "of Business to the linked company with update_company (address_1, city, state, "
                                             "postal_code, country) — see RULE 20.")
@@ -1930,8 +1976,9 @@ def _execute_tool_inner(tool_name, tool_input):
         result = call_pipeline_api("PUT", f"/people/{tool_input['person_id']}.json", payload)
         if result["status"] == 200:
             out = {"success": True, "message": "Record updated. Do not verify or retry — report success to the user.", **notes}
-            if blocked_downgrades or phone_flags:
-                out["message"] += " Some fields were NOT changed — report blocked_downgrades / phone_flags to the user."
+            if blocked_downgrades or phone_flags or blocked_address:
+                out["message"] += (" Some fields were NOT changed — report blocked_downgrades / phone_flags / "
+                                   "entity_guard_fired to the user.")
             return out
         return {"success": False, "status": result["status"], "error": result["data"]}
 
@@ -1953,24 +2000,22 @@ def _execute_tool_inner(tool_name, tool_input):
         notes = {}
         if phone_flags:
             notes["phone_flags"] = phone_flags
-        if "name" in fields and current_email_is_entity_form():
-            notes["rename_blocked"] = (f"Entity form: company NOT renamed to {fields.pop('name')!r}. "
+        entity_trigger = entity_form_trigger() if "name" in fields else None
+        if entity_trigger:
+            new_name = fields.pop("name")
+            logger.warning(f"entity-form guard: company {tool_input['company_id']} — rename to {new_name!r} blocked; "
+                           f"triggered by {entity_trigger}")
+            notes["rename_blocked"] = (f"Entity form: company NOT renamed to {new_name!r}. "
                                        "Report 'Company name mismatch' to Chad instead (RULE 20).")
+            notes["entity_guard_fired"] = (f"Entity-form guard blocked renaming company {tool_input['company_id']} "
+                                           f"(detected from {entity_trigger}). Mention this in your reply so Chad "
+                                           f"can catch a false positive.")
         address_keys = [k for k in fields if k in COMPANY_ADDRESS_FIELDS
                          or ("phone" in k and not k.startswith("custom_label_"))]
         if address_keys:
-            # Write only keys the live record actually has, so a wrong name never silently no-ops.
             live = call_pipeline_api("GET", f"/companies/{tool_input['company_id']}.json")
-            if live["status"] != 200 or not isinstance(live["data"], dict):
-                return {"success": False, "status": live["status"],
-                        "error": f"Could not read company {tool_input['company_id']} to verify address fields"}
-            unknown = [k for k in address_keys if k not in live["data"]]
-            for k in unknown:
-                fields.pop(k)
-            if unknown:
-                logger.warning(f"update_company: address/phone keys not on live record, skipped: {unknown}")
-                notes["unknown_address_fields"] = unknown
-            notes["previous_address"] = {k: live["data"].get(k) for k in COMPANY_ADDRESS_FIELDS if k in live["data"]}
+            if live["status"] == 200 and isinstance(live["data"], dict):
+                notes["previous_address"] = {k: live["data"].get(k) for k in COMPANY_ADDRESS_FIELDS}
         standard = {}
         custom = {}
         for k, v in fields.items():
@@ -2022,9 +2067,11 @@ def _execute_tool_inner(tool_name, tool_input):
             payload["company"]["custom_fields"] = custom
         if not standard and not custom:
             return {"success": True, **notes, "message": "No fields written. Report the notes to the user."}
-        result = call_pipeline_api("PUT", f"/companies/{tool_input['company_id']}.json", payload)
+        result, unknown = put_company_checked(tool_input["company_id"], payload, address_keys)
+        if unknown:
+            notes["unknown_address_fields"] = unknown
         if result["status"] == 200:
-            return {"success": True, **notes, "message": "Record updated. Do not verify or retry — report success (and any phone_flags / rename_blocked / unknown_address_fields) to the user."}
+            return {"success": True, **notes, "message": "Record updated. Do not verify or retry — report success (and any phone_flags / rename_blocked / entity_guard_fired / unknown_address_fields) to the user."}
         return {"success": False, "status": result["status"], "error": result["data"]}
 
     elif tool_name == "create_company":
