@@ -230,6 +230,106 @@ def guard_form_status_downgrades(person_id, custom):
             blocked.append(msg)
     return blocked
 
+# ── Phone normalization (every person/company write goes through this) ────────
+# Country → calling code, keyed by lowercased name and ISO2. Used only as a hint for
+# numbers written without "+"/"00"; a number with an explicit international prefix
+# never needs it.
+_CALLING_CODES = {
+    "us": "1", "usa": "1", "united states": "1", "united states of america": "1",
+    "ca": "1", "canada": "1", "gb": "44", "uk": "44", "united kingdom": "44", "england": "44",
+    "ie": "353", "ireland": "353", "fr": "33", "france": "33", "de": "49", "germany": "49",
+    "ch": "41", "switzerland": "41", "nl": "31", "netherlands": "31", "be": "32", "belgium": "32",
+    "lu": "352", "luxembourg": "352", "es": "34", "spain": "34", "pt": "351", "portugal": "351",
+    "it": "39", "italy": "39", "at": "43", "austria": "43", "se": "46", "sweden": "46",
+    "no": "47", "norway": "47", "dk": "45", "denmark": "45", "fi": "358", "finland": "358",
+    "pl": "48", "poland": "48", "ua": "380", "ukraine": "380", "gr": "30", "greece": "30",
+    "cy": "357", "cyprus": "357", "mt": "356", "malta": "356", "mc": "377", "monaco": "377",
+    "il": "972", "israel": "972", "tr": "90", "turkey": "90", "ae": "971", "uae": "971",
+    "united arab emirates": "971", "sa": "966", "saudi arabia": "966", "qa": "974", "qatar": "974",
+    "kw": "965", "kuwait": "965", "bh": "973", "bahrain": "973", "om": "968", "oman": "968",
+    "eg": "20", "egypt": "20", "za": "27", "south africa": "27", "ng": "234", "nigeria": "234",
+    "ke": "254", "kenya": "254", "in": "91", "india": "91", "pk": "92", "pakistan": "92",
+    "sg": "65", "singapore": "65", "hk": "852", "hong kong": "852", "cn": "86", "china": "86",
+    "tw": "886", "taiwan": "886", "jp": "81", "japan": "81", "kr": "82", "south korea": "82",
+    "korea": "82", "th": "66", "thailand": "66", "my": "60", "malaysia": "60",
+    "id": "62", "indonesia": "62", "ph": "63", "philippines": "63", "vn": "84", "vietnam": "84",
+    "au": "61", "australia": "61", "nz": "64", "new zealand": "64", "br": "55", "brazil": "55",
+    "mx": "52", "mexico": "52", "ar": "54", "argentina": "54", "cl": "56", "chile": "56",
+    "co": "57", "colombia": "57", "pe": "51", "peru": "51",
+}
+PHONE_FIELDS = ("phone", "mobile", "work_phone", "home_phone")
+COMPANY_ADDRESS_FIELDS = ("address_1", "address_2", "city", "state", "postal_code", "country")
+
+def _calling_code(country):
+    return _CALLING_CODES.get(re.sub(r"[^a-z ]", "", (country or "").lower()).strip())
+
+def normalize_phone(raw, country=None):
+    """E.164 for `raw`, or (None, reason) when it can't be done without losing digits.
+    Returns (e164, None) on success. `country` (name or ISO2) is only a hint for numbers
+    written with a national trunk 0, e.g. "(0971) 585-629481" + UAE → +971585629481."""
+    s = re.sub(r"\(\s*0\s*\)", "", (raw or "").strip())   # "+44 (0) 20…": the (0) is never dialled
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return None, f"no digits in {raw!r}"
+    cc = _calling_code(country)
+    if s.startswith("+") and not digits.startswith("0"):
+        out = digits
+    elif digits.startswith("00"):
+        out = digits[2:]
+    elif cc and digits.startswith("0" + cc) and len(digits) - 1 - len(cc) >= 6:
+        out = digits[1:]                       # "0" + country code: trunk 0 typed before the CC
+    elif cc and cc != "1" and digits.startswith(cc) and len(digits) >= 11 and len(digits) - len(cc) >= 8:
+        out = digits
+    elif cc and digits.startswith("0"):
+        out = cc + digits[1:]                  # national number with trunk 0
+    elif (cc in (None, "1")) and len(digits) == 10:
+        out = "1" + digits
+    elif (cc in (None, "1")) and len(digits) == 11 and digits.startswith("1"):
+        out = digits
+    elif cc:
+        out = cc + digits
+    else:
+        return None, f"{raw!r} has no country code and no country to infer one from"
+    # Lost-digit guard: every significant digit of the input (all but international
+    # "00" / one trunk "0") must survive, in order, at the end of the output.
+    significant = digits[2:] if digits.startswith("00") else digits[1:] if digits.startswith("0") else digits
+    if not out.endswith(significant):
+        return None, f"normalizing {raw!r} → +{out} would drop digits"
+    if not 8 <= len(out) <= 15:
+        return None, f"{raw!r} → +{out} is not a valid E.164 length ({len(out)} digits)"
+    return "+" + out, None
+
+def guard_phone_fields(fields, country=None, keys=PHONE_FIELDS):
+    """Normalize phone values in `fields` in place. Unnormalizable values are removed
+    (never written) and returned as flag messages for the reply."""
+    flags = []
+    for k in [k for k in fields if k in keys]:
+        v = fields[k]
+        if not isinstance(v, str) or not v.strip():
+            continue
+        e164, problem = normalize_phone(v, country)
+        if e164:
+            fields[k] = e164
+        else:
+            fields.pop(k)
+            logger.warning(f"phone guard: {k} not written — {problem}")
+            flags.append(f"{k} not written: {problem}")
+    return flags
+
+# ── Entity forms (IQF for Legal Entities / entity CEF) ────────────────────────
+_ENTITY_FORM_RE = re.compile(
+    r"principal\s+place\s+of\s+business|name\s+of\s+entity\s+client|entity\s+investor\s+name"
+    r"|for\s+legal\s+entit(?:y|ies)", re.I)
+PERSON_ADDRESS_FIELDS = {f"{p}_{s}" for p in ("work", "home")
+                         for s in ("address_1", "address_2", "street", "city", "state", "postal_code", "country")}
+
+def current_email_is_entity_form():
+    """True when the email being processed carries an entity IQF/CEF (subject, body or attachment)."""
+    em = _CURRENT_EMAIL or {}
+    texts = [em.get("subject") or "", em.get("body") or ""]
+    texts += [_attachment_text(a) for a in _CURRENT_ATTACHMENTS]
+    return any(_ENTITY_FORM_RE.search(t) for t in texts if t)
+
 # ── Call Pipeline CRM API ─────────────────────────────────────────────────────
 def call_pipeline_api(method, endpoint, payload=None):
     base_url = "https://api.pipelinecrm.com/api/v3"
@@ -1112,8 +1212,9 @@ TOOL_SPECS = [
                 "first_name": {"type": "string"},
                 "last_name": {"type": "string"},
                 "email": {"type": "string"},
-                "phone": {"type": "string"},
+                "phone": {"type": "string", "description": "Pass exactly as written on the source; the tool normalizes to E.164 and refuses (flags) any number that would lose digits."},
                 "mobile": {"type": "string"},
+                "phone_country": {"type": "string", "description": "Country the phone belongs to (e.g. the form's country). Hint for numbers written without +/00; not stored."},
                 "company_name": {"type": "string"},
                 "position": {"type": "string"},
                 "linked_in_url": {"type": "string"},
@@ -1144,7 +1245,7 @@ TOOL_SPECS = [
             "description": "Update a company record fields. Hiive market data fields: hiive_bid (custom_label_3997298) = highest bid price on Hiive (currency, per share), hiive_ask (custom_label_3997297) = lowest ask price on Hiive (currency, per share). The corresponding date fields (custom_label_3997299 ask date, custom_label_3997300 bid date) are set automatically to today when bid or ask is updated — never pass them explicitly.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "company_id": {"type": "integer"},
-                "fields": {"type": "object", "description": "Fields to update. Includes Hiive market data: custom_label_3997298=hiive_bid (highest bid, per share), custom_label_3997297=hiive_ask (lowest ask, per share). Bid/ask date fields are auto-set to today — never pass them explicitly."},
+                "fields": {"type": "object", "description": "Fields to update. Address: address_1 (street), address_2, city, state, postal_code, country — these overwrite the company's current address. Phone: phone1 (pass as written; normalized to E.164, refused if digits would be lost); optional phone_country hint (not stored). Includes Hiive market data: custom_label_3997298=hiive_bid (highest bid, per share), custom_label_3997297=hiive_ask (lowest ask, per share). Bid/ask date fields are auto-set to today — never pass them explicitly."},
                 "industry": {"type": "array", "items": {"type": "string"}, "description": "List of industry tags e.g. [\"AI\", \"Defense\", \"Robotics\"]. Will be mapped to entry IDs automatically and merged with existing values."}
             }, "required": ["company_id", "fields"]}}
         }
@@ -1697,6 +1798,9 @@ def _execute_tool_inner(tool_name, tool_input):
                     "existing_name": f"{dup.get('first_name','')} {dup.get('last_name','')}".strip(),
                     "pipeline_url": f"https://app.pipelinecrm.com/people/{dup['id']}"
                 }
+        tool_input = dict(tool_input)
+        phone_country = tool_input.pop("phone_country", None) or tool_input.get("work_country") or tool_input.get("home_country")
+        phone_flags = guard_phone_fields(tool_input, phone_country)
         # Build person payload from provided fields
         person_data = {}
         standard_fields = ["first_name", "last_name", "email", "home_email", "phone", "mobile",
@@ -1754,14 +1858,29 @@ def _execute_tool_inner(tool_name, tool_input):
                 return {"success": True, "person_id": new_id, "pipeline_url": pipeline_url,
                         "person_type": "Contact", "support_staff_detected": True,
                         "message": f"Created as Contact. {note} Reply must include the pipeline_url so Chad can verify."}
-            return {"success": True, "person_id": new_id, "pipeline_url": pipeline_url, "person_type": "Lead", "message": f"Created. Reply must include the pipeline_url so Chad can verify."}
+            out = {"success": True, "person_id": new_id, "pipeline_url": pipeline_url, "person_type": "Lead", "message": f"Created. Reply must include the pipeline_url so Chad can verify."}
+            if phone_flags:
+                out["phone_flags"] = phone_flags
+                out["message"] += " Some phone values were NOT written — report phone_flags to Chad."
+            return out
         return {"success": False, "status": result["status"], "error": result["data"]}
 
     elif tool_name == "update_person":
+        fields = dict(tool_input["fields"])
+        phone_country = fields.pop("phone_country", None) or fields.get("work_country") or fields.get("home_country")
+        phone_flags = guard_phone_fields(fields, phone_country)
+        # Entity IQF/CEF: the Principal Place of Business belongs on the linked company
+        # (update_company), never on the contact person's work/home address.
+        blocked_address = []
+        if any(k in PERSON_ADDRESS_FIELDS for k in fields) and current_email_is_entity_form():
+            blocked_address = sorted(k for k in fields if k in PERSON_ADDRESS_FIELDS)
+            for k in blocked_address:
+                fields.pop(k)
+            logger.warning(f"entity-form guard: person {tool_input['person_id']} address fields dropped: {blocked_address}")
         # Split standard fields from custom fields
         standard = {}
         custom = {}
-        for k, v in tool_input["fields"].items():
+        for k, v in fields.items():
             if k.startswith("custom_label_"):
                 custom[k] = v
             else:
@@ -1792,18 +1911,27 @@ def _execute_tool_inner(tool_name, tool_input):
                     merged = _id_list(existing_cf.get(k)) + _id_list(custom.get(k))
                     custom[k] = [i for i in dict.fromkeys(merged) if i not in remove_ids]
         blocked_downgrades = guard_form_status_downgrades(tool_input["person_id"], custom)
+        notes = {}
+        if blocked_downgrades:
+            notes["blocked_downgrades"] = blocked_downgrades
+        if phone_flags:
+            notes["phone_flags"] = phone_flags
+        if blocked_address:
+            notes["blocked_address_fields"] = blocked_address
+            notes["entity_form_address"] = ("Entity form: person address fields were NOT written. Write the Principal Place "
+                                            "of Business to the linked company with update_company (address_1, city, state, "
+                                            "postal_code, country) — see RULE 20.")
         if not standard and not custom:
-            return {"success": True, "blocked_downgrades": blocked_downgrades,
-                    "message": "No fields written — every requested change was a blocked downgrade. Report blocked_downgrades to the user."}
+            return {"success": True, **notes,
+                    "message": "No fields written — every requested change was blocked. Report the blocked items to the user."}
         payload = {"person": standard}
         if custom:
             payload["person"]["custom_fields"] = custom
         result = call_pipeline_api("PUT", f"/people/{tool_input['person_id']}.json", payload)
         if result["status"] == 200:
-            out = {"success": True, "message": "Record updated. Do not verify or retry — report success to the user."}
-            if blocked_downgrades:
-                out["blocked_downgrades"] = blocked_downgrades
-                out["message"] += " Some fields were NOT changed — report blocked_downgrades to the user."
+            out = {"success": True, "message": "Record updated. Do not verify or retry — report success to the user.", **notes}
+            if blocked_downgrades or phone_flags:
+                out["message"] += " Some fields were NOT changed — report blocked_downgrades / phone_flags to the user."
             return out
         return {"success": False, "status": result["status"], "error": result["data"]}
 
@@ -1813,9 +1941,39 @@ def _execute_tool_inner(tool_name, tool_input):
             "hiive_bid":            "custom_label_3997298",
             "hiive_ask":            "custom_label_3997297",
         }
+        fields = dict(tool_input["fields"])
+        # Common aliases → Pipeline company address keys
+        for alias, key in (("address", "address_1"), ("street", "address_1"), ("zip", "postal_code"),
+                           ("postal", "postal_code"), ("phone", "phone1")):
+            if alias in fields and key not in fields:
+                fields[key] = fields.pop(alias)
+        phone_country = fields.pop("phone_country", None) or fields.get("country")
+        phone_flags = guard_phone_fields(fields, phone_country,
+                                         keys=[k for k in fields if "phone" in k and not k.startswith("custom_label_")])
+        notes = {}
+        if phone_flags:
+            notes["phone_flags"] = phone_flags
+        if "name" in fields and current_email_is_entity_form():
+            notes["rename_blocked"] = (f"Entity form: company NOT renamed to {fields.pop('name')!r}. "
+                                       "Report 'Company name mismatch' to Chad instead (RULE 20).")
+        address_keys = [k for k in fields if k in COMPANY_ADDRESS_FIELDS
+                         or ("phone" in k and not k.startswith("custom_label_"))]
+        if address_keys:
+            # Write only keys the live record actually has, so a wrong name never silently no-ops.
+            live = call_pipeline_api("GET", f"/companies/{tool_input['company_id']}.json")
+            if live["status"] != 200 or not isinstance(live["data"], dict):
+                return {"success": False, "status": live["status"],
+                        "error": f"Could not read company {tool_input['company_id']} to verify address fields"}
+            unknown = [k for k in address_keys if k not in live["data"]]
+            for k in unknown:
+                fields.pop(k)
+            if unknown:
+                logger.warning(f"update_company: address/phone keys not on live record, skipped: {unknown}")
+                notes["unknown_address_fields"] = unknown
+            notes["previous_address"] = {k: live["data"].get(k) for k in COMPANY_ADDRESS_FIELDS if k in live["data"]}
         standard = {}
         custom = {}
-        for k, v in tool_input["fields"].items():
+        for k, v in fields.items():
             if k in COMPANY_FIELD_MAP:
                 custom[COMPANY_FIELD_MAP[k]] = v
             elif k.startswith("custom_label_"):
@@ -1862,9 +2020,11 @@ def _execute_tool_inner(tool_name, tool_input):
         payload = {"company": standard}
         if custom:
             payload["company"]["custom_fields"] = custom
+        if not standard and not custom:
+            return {"success": True, **notes, "message": "No fields written. Report the notes to the user."}
         result = call_pipeline_api("PUT", f"/companies/{tool_input['company_id']}.json", payload)
         if result["status"] == 200:
-            return {"success": True, "message": "Record updated. Do not verify or retry — report success to the user."}
+            return {"success": True, **notes, "message": "Record updated. Do not verify or retry — report success (and any phone_flags / rename_blocked / unknown_address_fields) to the user."}
         return {"success": False, "status": result["status"], "error": result["data"]}
 
     elif tool_name == "create_company":
@@ -2850,6 +3010,7 @@ def lambda_handler(event, context):
 
     # Manual test invocation
     if 'instruction' in event:
+        _CURRENT_EMAIL = {"subject": "", "body": event['instruction']}
         try:
             answer, write_ops = run_agent(event['instruction'])
             return {
