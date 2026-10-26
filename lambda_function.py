@@ -8,8 +8,11 @@ import re
 import os
 import time
 import difflib
+import random
 import unicodedata
 from datetime import date
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 try:
     from pypdf import PdfReader   # bundled into the deploy zip by .github/workflows/deploy.yml
@@ -2964,8 +2967,56 @@ def _execute_tool_inner(tool_name, tool_input):
     return {"error": f"Unknown tool: {tool_name}"}
 
 # ── Agentic loop ──────────────────────────────────────────────────────────────
+# Bedrock capacity errors (not code bugs): retried with backoff, then the next
+# model ID is tried. Only IDs verified to exist in this account belong here.
+BEDROCK_MODEL_IDS = ["us.anthropic.claude-sonnet-4-6"]
+BEDROCK_RETRYABLE = {"ServiceUnavailableException", "ThrottlingException", "ModelNotReadyException"}
+BEDROCK_BACKOFF_SECONDS = (2, 4, 8, 16)
+BEDROCK_MAX_EXTRA_WAIT = 55
+BEDROCK_OVERLOADED_MSG = "Bedrock was temporarily overloaded. Please resend your request in a few minutes."
+
+
+class BedrockUnavailableError(Exception):
+    """Every model ID in BEDROCK_MODEL_IDS stayed unavailable after backoff."""
+
+
+def _converse_with_fallback(bedrock, **kwargs):
+    """bedrock.converse over BEDROCK_MODEL_IDS. Capacity errors back off ~2/4/8/16s
+    (+jitter, total extra wait capped at BEDROCK_MAX_EXTRA_WAIT across all models),
+    then fall through to the next ID; an ID this account can't use is skipped.
+    Returns (response, model_id)."""
+    waited = 0.0
+    last_err = None
+    for model_id in BEDROCK_MODEL_IDS:
+        for attempt in range(len(BEDROCK_BACKOFF_SECONDS) + 1):
+            try:
+                return bedrock.converse(modelId=model_id, **kwargs), model_id
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "")
+                last_err = e
+                if code in ("AccessDeniedException", "ResourceNotFoundException", "ValidationException") \
+                        and model_id != BEDROCK_MODEL_IDS[0]:
+                    logger.warning(f"Bedrock fallback {model_id} unusable ({code}); skipping")
+                    break
+                if code not in BEDROCK_RETRYABLE:
+                    raise
+                if attempt == len(BEDROCK_BACKOFF_SECONDS):
+                    logger.warning(f"Bedrock {model_id} still unavailable ({code}); trying next model")
+                    break
+                delay = BEDROCK_BACKOFF_SECONDS[attempt] * random.uniform(0.75, 1.25)
+                delay = min(delay, BEDROCK_MAX_EXTRA_WAIT - waited)
+                if delay <= 0:
+                    logger.warning(f"Bedrock {model_id} unavailable ({code}); backoff budget spent")
+                    break
+                logger.warning(f"Bedrock {model_id} {code}; retry {attempt + 1} in {delay:.1f}s")
+                time.sleep(delay)
+                waited += delay
+    raise BedrockUnavailableError(str(last_err))
+
+
 def run_agent(instruction, attachments=None):
-    bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+    bedrock = boto3.client('bedrock-runtime', region_name='us-east-1', config=Config(
+        retries={"max_attempts": 10, "mode": "adaptive"}, read_timeout=300, connect_timeout=10))
 
     system_prompt = _SYSTEM_PROMPT
 
@@ -2989,13 +3040,14 @@ def run_agent(instruction, attachments=None):
     for iteration in range(12):
         logger.info(f"Agent iteration {iteration + 1}")
 
-        response = bedrock.converse(
-            modelId="us.anthropic.claude-sonnet-4-6",
+        response, model_id = _converse_with_fallback(
+            bedrock,
             system=[{"text": system_prompt}],
             messages=messages,
             toolConfig={"tools": TOOL_SPECS},
             inferenceConfig={"maxTokens": 8000}
         )
+        logger.info(f"Iteration {iteration + 1} answered by {model_id}")
 
         stop_reason = response["stopReason"]
         assistant_message = response["output"]["message"]
@@ -3226,7 +3278,8 @@ def lambda_handler(event, context):
     except Exception as e:
         logger.error(f"Agent error: {e}")
         try:
-            send_reply(from_address, subject, f"Sorry, I encountered an error: {str(e)}")
+            send_reply(from_address, subject, BEDROCK_OVERLOADED_MSG if isinstance(e, BedrockUnavailableError)
+                       else f"Sorry, I encountered an error: {str(e)}")
         except:
             pass
         return {'statusCode': 500, 'body': str(e)}
