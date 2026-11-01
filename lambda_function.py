@@ -1482,7 +1482,7 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "create_deal",
-            "description": "Create a new deal in Pipeline CRM. Always look up company_id via search_companies and primary_contact_id via search_people first. Deal name format: 'Company: $MIN - $MAX Buy/Sell' (min=max → 'Company: $X Sell'; min only → 'Company: $MIN+ Buy'; max only → 'Company: up to $MAX Sell'; no size → 'Company: Buy'). K/M/B amounts, drop trailing .0, spaced hyphen not en dash. Revenue type is always Commission. Stage is Firm only if BOTH a price field (gross or net) AND a size field (min or max) are present; Inquiry otherwise. Messaging is always set to Disallow on creation.",
+            "description": "Create a new deal in Pipeline CRM. Always look up company_id via search_companies and primary_contact_id via search_people first. Deal name format: 'Company: $MIN - $MAX Buy/Sell' (min=max → 'Company: $X Sell'; min only → 'Company: $MIN+ Buy'; max only → 'Company: up to $MAX Sell'; no size → 'Company: Buy'). K/M/B amounts, drop trailing .0, spaced hyphen not en dash. Revenue type is always Commission. Stage is Firm only if BOTH a price field (gross or net) AND a size field (min or max) are present; Inquiry otherwise. Messaging is always set to Disallow on creation. Nexus (Direct), CP Direct? (Yes) and Revenue Type (Commission) are set automatically on creation.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "name": {"type": "string", "description": "Deal name, company first then colon, e.g. 'Anthropic: $100K - $250K Buy'"},
                 "company_id": {"type": "integer", "description": "Pipeline company ID — look up via search_companies first"},
@@ -1496,7 +1496,6 @@ TOOL_SPECS = [
                 "structure": {"type": "array", "items": {"type": "string", "enum": ["Direct", "Fund", "Forward"]}, "description": "Deal structure(s) — multi-select; pass every value that applies, e.g. [\"Direct\", \"Forward\"]"},
                 "series": {"type": "string", "description": "Series e.g. A, B, C, D, E, F, Seed, N/A"},
                 "class": {"type": "string", "enum": ["Common", "Preferred", "Mixed", "Any"], "description": "Share class"},
-                "nexus": {"type": "string", "enum": ["Direct", "RMS Broker", "Co-Broker", "Foreign Finder"], "description": "How the deal came in"},
                 "management_fee": {"type": "number", "description": "SPV management fee percentage"},
                 "carry": {"type": "number", "description": "SPV carry percentage"},
                 "seller_fee": {"type": "number", "description": "One-time upfront seller fee % (not annual). Use for 'upfront fee', 'one-time fee', or 'seller fee' mentions."},
@@ -2722,7 +2721,6 @@ def _execute_tool_inner(tool_name, tool_input):
         type_map      = _DEAL_FIELDS["deal_type"]["values"]
         structure_map = _DEAL_FIELDS["structure"]["values"]
         class_map     = _DEAL_FIELDS["class"]["values"]
-        nexus_map     = _DEAL_FIELDS["nexus"]["values"]
         series_map    = _DEAL_FIELDS["series"]["values"]
         layers_map    = _DEAL_FIELDS["layers"]["values"]
 
@@ -2752,8 +2750,6 @@ def _execute_tool_inner(tool_name, tool_input):
             custom_fields["custom_label_3064333"] = series_map[tool_input["series"]]
         if tool_input.get("class") in class_map:
             custom_fields["custom_label_3064330"] = class_map[tool_input["class"]]
-        if tool_input.get("nexus") in nexus_map:
-            custom_fields["custom_label_3751449"] = nexus_map[tool_input["nexus"]]
         if tool_input.get("management_fee") is not None:
             custom_fields["custom_label_3940558"] = float(tool_input["management_fee"])
         if tool_input.get("carry") is not None:
@@ -2768,30 +2764,9 @@ def _execute_tool_inner(tool_name, tool_input):
             custom_fields["custom_label_3070843"] = float(tool_input["num_shares"])
         custom_fields["custom_label_3994687"] = float(tool_input["refresh"]) if tool_input.get("refresh") is not None else 0.0
 
-        # Auto-set CP Direct and Nexus from primary contact's Role, unless explicitly provided
-        nexus_explicit = tool_input.get("nexus") in nexus_map
-        cp_direct_explicit = "cp_direct" in tool_input
-        if not (nexus_explicit and cp_direct_explicit):
-            role = None
-            try:
-                contact = call_pipeline_api("GET", f"/people/{tool_input['primary_contact_id']}.json")
-                if contact["status"] == 200:
-                    role_val = (contact["data"].get("custom_fields") or {}).get("custom_label_3075382")
-                    role = role_val[0] if isinstance(role_val, list) and role_val else role_val
-            except Exception as e:
-                logger.warning(f"create_deal: failed to fetch role for contact {tool_input.get('primary_contact_id')}: {e}")
-            if role == 6438705:  # Intermediary
-                if not cp_direct_explicit:
-                    custom_fields["custom_label_3065662"] = 5080987  # No
-                if not nexus_explicit:
-                    custom_fields["custom_label_3751449"] = 6460635  # Co-Broker
-            else:  # Investor (6596061) or blank/unset
-                if not cp_direct_explicit:
-                    custom_fields["custom_label_3065662"] = 5080984  # Yes
-                if not nexus_explicit:
-                    custom_fields["custom_label_3751449"] = 6460632  # Direct
-
         custom_fields["custom_label_4001285"] = 7187011  # Messaging = Disallow
+        custom_fields["custom_label_3751449"] = 6460632  # Nexus = Direct (always)
+        custom_fields["custom_label_3065662"] = 5080984  # CP Direct? = Yes (always)
         custom_fields[LAST_CONFIRMED_FIELD] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         # Deal name is built here from company + sizes so the format holds regardless of what the model passed.
