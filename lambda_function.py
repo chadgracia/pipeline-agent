@@ -1221,6 +1221,21 @@ _SUMMARY_BLOCKS = [
 ]
 
 
+EMPTY_SUMMARY_NOTE = "empty summary ignored — summaries are never cleared by the agent"
+
+
+def drop_empty_summary(fields):
+    """Remove empty/whitespace-only description/summary keys from update_company fields (in place).
+
+    The agent never clears a company Summary. Returns EMPTY_SUMMARY_NOTE if anything was dropped, else None."""
+    dropped = False
+    for key in ("description", "summary"):
+        if key in fields and not str(fields[key] or "").strip():
+            fields.pop(key)
+            dropped = True
+    return EMPTY_SUMMARY_NOTE if dropped else None
+
+
 def check_company_summary(text):
     """Return None if the public company summary is acceptable, else an error string for the model.
 
@@ -2035,6 +2050,7 @@ def _execute_tool_inner(tool_name, tool_input):
             "hiive_ask":            "custom_label_3997297",
         }
         fields = dict(tool_input["fields"])
+        summary_note = drop_empty_summary(fields)
         if "summary" in fields and "description" not in fields:
             fields["description"] = fields.pop("summary")
         if "description" in fields:
@@ -2050,6 +2066,8 @@ def _execute_tool_inner(tool_name, tool_input):
         phone_flags = guard_phone_fields(fields, phone_country,
                                          keys=[k for k in fields if "phone" in k and not k.startswith("custom_label_")])
         notes = {}
+        if summary_note:
+            notes["summary_note"] = summary_note
         if phone_flags:
             notes["phone_flags"] = phone_flags
         entity_trigger = entity_form_trigger() if "name" in fields else None
@@ -2123,7 +2141,7 @@ def _execute_tool_inner(tool_name, tool_input):
         if unknown:
             notes["unknown_address_fields"] = unknown
         if result["status"] == 200:
-            return {"success": True, **notes, "message": "Record updated. Do not verify or retry — report success (and any phone_flags / rename_blocked / entity_guard_fired / unknown_address_fields) to the user."}
+            return {"success": True, **notes, "message": "Record updated. Do not verify or retry — report success (and any summary_note / phone_flags / rename_blocked / entity_guard_fired / unknown_address_fields) to the user."}
         return {"success": False, "status": result["status"], "error": result["data"]}
 
     elif tool_name == "create_company":
