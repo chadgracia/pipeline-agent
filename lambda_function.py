@@ -1198,6 +1198,49 @@ def rename_drive_file(new_name, file_id=None, current_name=None, client_name=Non
             "new_name": r["data"].get("name", new_name), "url": _file_url(target["id"])}
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
+SUMMARY_RULES = (
+    "PUBLIC, seller-facing firm summary. Facts only, 50-70 words, neutral tone, no marketing adjectives "
+    "(leading, exceptional, trusted, world-class...), never first person (we/our/I/my). Order: firm type; "
+    "founded year and founder; HQ and offices; size (AUM, fund size or number of investments) if public; "
+    "stage and sector focus; 2-3 notable investments or exits. Sources: PitchBook, Crunchbase, CB Insights, "
+    "SEC/regulatory filings, press. The firm's own claims are attributed ('says it invests in...'), never "
+    "stated as fact. End with '(Sources: ...)'. Never include: Chad's or anyone's notes, opinions or judgments, "
+    "deal/trade history, fees or terms, contact names who wrote/met Chad, status tags (INACTIVE etc.), anything "
+    "from KYC/IQF/CEF, tax IDs, beneficial owners. Internal notes go in add_note, never in the summary. If fewer "
+    "than 2 facts can be verified, leave summary empty."
+)
+SUMMARY_MAX_WORDS = 120
+_SUMMARY_BLOCKS = [
+    (re.compile(r"\b(I|my|me|we|our|us)\b"), "first person (I/my/me/we/our/us)"),
+    (re.compile(r"\b(we're|we've)\b", re.I), "first person (we're/we've)"),
+    (re.compile(re.escape("***")), "internal marker '***'"),
+    (re.compile(r"inactive", re.I), "status tag 'inactive'"),
+    (re.compile(r"rainmaker", re.I), "internal reference 'Rainmaker'"),
+    (re.compile(r"pipelinecrm\.com", re.I), "CRM link 'pipelinecrm.com'"),
+    (re.compile(r"\bchad\b\s+(met|spoke|talked|introduced)", re.I), "Chad's interaction notes"),
+]
+
+
+def check_company_summary(text):
+    """Return None if the public company summary is acceptable, else an error string for the model.
+
+    Empty summaries pass (SUMMARY_RULES says leave it empty when facts can't be verified)."""
+    if not text or not str(text).strip():
+        return None
+    text = str(text)
+    problems = [label for rx, label in _SUMMARY_BLOCKS if rx.search(text)]
+    words = len(text.split())
+    if words > SUMMARY_MAX_WORDS:
+        problems.append(f"{words} words (max {SUMMARY_MAX_WORDS}; target 50-70)")
+    if "(Sources:" not in text:
+        problems.append("missing '(Sources: ...)' ending")
+    if not problems:
+        return None
+    return ("Summary REJECTED — nothing was written to Pipeline. The company Summary is public and shown to sellers. "
+            "Problems: " + "; ".join(problems) + ". Rewrite it following these rules and call the tool again "
+            "(put internal notes in add_note): " + SUMMARY_RULES)
+
+
 TOOL_SPECS = [
     {
         "toolSpec": {
@@ -1288,7 +1331,7 @@ TOOL_SPECS = [
             "description": "Update a company record fields. Hiive market data fields: hiive_bid (custom_label_3997298) = highest bid price on Hiive (currency, per share), hiive_ask (custom_label_3997297) = lowest ask price on Hiive (currency, per share). The corresponding date fields (custom_label_3997299 ask date, custom_label_3997300 bid date) are set automatically to today when bid or ask is updated — never pass them explicitly.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "company_id": {"type": "integer"},
-                "fields": {"type": "object", "description": "Fields to update. Address: address_1 (street), address_2, city, state, postal_code, country — these overwrite the company's current address. Phone: phone1 (pass as written; normalized to E.164, refused if digits would be lost); optional phone_country hint (not stored). Includes Hiive market data: custom_label_3997298=hiive_bid (highest bid, per share), custom_label_3997297=hiive_ask (lowest ask, per share). Bid/ask date fields are auto-set to today — never pass them explicitly."},
+                "fields": {"type": "object", "description": "Fields to update. Address: address_1 (street), address_2, city, state, postal_code, country — these overwrite the company's current address. Phone: phone1 (pass as written; normalized to E.164, refused if digits would be lost); optional phone_country hint (not stored). Includes Hiive market data: custom_label_3997298=hiive_bid (highest bid, per share), custom_label_3997297=hiive_ask (lowest ask, per share). Bid/ask date fields are auto-set to today — never pass them explicitly. Summary: \"description\" (alias \"summary\") is the PUBLIC, seller-facing company Summary and must follow these rules: " + SUMMARY_RULES},
                 "industry": {"type": "array", "items": {"type": "string"}, "description": "List of industry tags e.g. [\"AI\", \"Defense\", \"Robotics\"]. Will be mapped to entry IDs automatically and merged with existing values."}
             }, "required": ["company_id", "fields"]}}
         }
@@ -1299,7 +1342,7 @@ TOOL_SPECS = [
             "description": "Create a new company record in Pipeline CRM.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "name": {"type": "string"},
-                "summary": {"type": "string"},
+                "summary": {"type": "string", "description": SUMMARY_RULES},
                 "org_type": {"type": "integer", "description": "Org type entry ID e.g. 6677589=Private Company, 5103523=Unicorn, 6298036=Public Company, 4497856=GP:VC, 444501=GP:PE, 444492=LP:Family Office"},
                 "last_round_pps": {"type": "number", "description": "Last round price per share"},
                 "last_round_valuation": {"type": "number", "description": "Last round valuation in billions (e.g. $7.6B = 7.6, $18B = 18.0)"},
@@ -1992,6 +2035,12 @@ def _execute_tool_inner(tool_name, tool_input):
             "hiive_ask":            "custom_label_3997297",
         }
         fields = dict(tool_input["fields"])
+        if "summary" in fields and "description" not in fields:
+            fields["description"] = fields.pop("summary")
+        if "description" in fields:
+            summary_error = check_company_summary(fields["description"])
+            if summary_error:
+                return {"success": False, "error": summary_error}
         # Common aliases → Pipeline company address keys
         for alias, key in (("address", "address_1"), ("street", "address_1"), ("zip", "postal_code"),
                            ("postal", "postal_code"), ("phone", "phone1")):
@@ -2078,6 +2127,9 @@ def _execute_tool_inner(tool_name, tool_input):
         return {"success": False, "status": result["status"], "error": result["data"]}
 
     elif tool_name == "create_company":
+        summary_error = check_company_summary(tool_input.get("summary"))
+        if summary_error:
+            return {"success": False, "error": summary_error}
         company_data = {"name": tool_input["name"]}
         if tool_input.get("summary"):
             company_data["description"] = tool_input["summary"]
