@@ -11,13 +11,15 @@ import unittest
 _SRC = pathlib.Path(__file__).resolve().parent.parent / "lambda_function.py"
 _tree = ast.parse(_SRC.read_text())
 _nodes = [n for n in _tree.body
-          if (isinstance(n, ast.FunctionDef) and n.name == "check_company_summary")
+          if (isinstance(n, ast.FunctionDef) and n.name in {"check_company_summary", "drop_empty_summary"})
           or (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in
-                                                {"SUMMARY_RULES", "SUMMARY_MAX_WORDS", "_SUMMARY_BLOCKS"}
+                                                {"SUMMARY_RULES", "SUMMARY_MAX_WORDS", "_SUMMARY_BLOCKS",
+                                                 "EMPTY_SUMMARY_NOTE"}
                                                 for t in n.targets))]
 _ns = {"re": re}
 exec(compile(ast.Module(body=_nodes, type_ignores=[]), str(_SRC), "exec"), _ns)
 check = _ns["check_company_summary"]
+drop_empty = _ns["drop_empty_summary"]
 
 GOOD = ("Technology investment firm founded in 2020 by Abishek Surendran; started in Bengaluru, now "
         "headquartered in Dubai with a presence in the US and India. Says it invests in AI, space, defense, "
@@ -59,6 +61,25 @@ class CompanySummaryGuard(unittest.TestCase):
     def test_rejects_too_long(self):
         err = check(("word " * 121) + "(Sources: PitchBook)")
         self.assertIn("max 120", err)
+
+
+class UpdateCompanyNeverClearsSummary(unittest.TestCase):
+    def test_drops_empty_and_whitespace_summary(self):
+        for key in ("description", "summary"):
+            for val in ("", "   \n\t", None):
+                fields = {key: val, "city": "Dubai"}
+                self.assertEqual(drop_empty(fields), "empty summary ignored — summaries are never cleared by the agent")
+                self.assertEqual(fields, {"city": "Dubai"})
+
+    def test_keeps_real_summary(self):
+        fields = {"description": GOOD}
+        self.assertIsNone(drop_empty(fields))
+        self.assertEqual(fields, {"description": GOOD})
+
+    def test_no_summary_key(self):
+        fields = {"city": "Dubai"}
+        self.assertIsNone(drop_empty(fields))
+        self.assertEqual(fields, {"city": "Dubai"})
 
 
 if __name__ == "__main__":
