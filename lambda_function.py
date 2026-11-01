@@ -10,7 +10,7 @@ import time
 import difflib
 import random
 import unicodedata
-from datetime import date
+from datetime import date, datetime, timezone
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -23,6 +23,7 @@ HIIVE_ASK_FIELD       = "custom_label_3997297"
 HIIVE_BID_FIELD       = "custom_label_3997298"
 HIIVE_ASK_DATE_FIELD  = "custom_label_3997299"
 HIIVE_BID_DATE_FIELD  = "custom_label_3997300"
+LAST_CONFIRMED_FIELD  = "custom_label_4012491"  # date (YYYY-MM-DD): last time the deal was confirmed live
 
 # ── Load agent data from S3 at cold start ─────────────────────────────────────
 def _load_agent_data():
@@ -2791,6 +2792,7 @@ def _execute_tool_inner(tool_name, tool_input):
                     custom_fields["custom_label_3751449"] = 6460632  # Direct
 
         custom_fields["custom_label_4001285"] = 7187011  # Messaging = Disallow
+        custom_fields[LAST_CONFIRMED_FIELD] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         # Deal name is built here from company + sizes so the format holds regardless of what the model passed.
         # Company name comes from the live record (new companies may not be in the hourly snapshot);
