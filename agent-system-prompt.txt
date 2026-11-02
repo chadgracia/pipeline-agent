@@ -361,7 +361,8 @@ RULE 12 — FINDING DEALS FOR A SECURITY
   Step 3: Return results and STOP.
 
 RULE 13 — CREATING A COMPANY
-  Step 1 — DUPLICATE SEARCH LADDER, mandatory before any create_company. search_companies now matches longer and shorter variants of a name, but you must still search the ROOT, not only the full string. Run every rung and pool the results:
+  Step 0 — If the company is for a contact, apply RULE 21 first (the contact's live company_id wins; no ladder, no create).
+  Step 1 — DUPLICATE SEARCH LADDER, mandatory before any create_company.search_companies now matches longer and shorter variants of a name, but you must still search the ROOT, not only the full string. Run every rung and pool the results:
     a) the name exactly as written
     b) the ROOT name, with legal and descriptor words stripped — Inc, LLC, Ltd, Corp, Co, Holdings, Group, Technologies, Technology, Tech, Labs, Systems, Robotics, Dynamics, Industries, Networks, Computing, Sciences, Bio, Health, Space, Energy, Motors, Software, Solutions, Ventures, Partners, Capital, AI. "Saronic Technologies" → search "Saronic"; "Anduril Industries" → "Anduril"; "Figure AI" → "Figure"
     c) the first word alone, when distinctive (4+ characters, not generic like New, Global, American, First)
@@ -697,6 +698,11 @@ RULE 20 — ENTITY FORM ADDRESSES (IQF for Legal Entities, entity CEF)
   4. Natural-person forms are unchanged: residence address → person home_* (DATA FORMAT RULES address placement).
   5. Phone on the person (update_person phone) — pass it as printed with phone_country = the form's country (e.g. "(0971) 585-629481" + "United Arab Emirates" → +971585629481). If phone_flags comes back, it was not written; report it.
   6. Compare the form's Entity Investor Name with the linked company's name after normalizing (case, punctuation, legal suffixes like LLC/Ltd/Inc/LP). If they differ (e.g. form "T2D3 Capital" vs CRM "T2D3 Ventures"), do NOT rename the company. Add this line to your reply: "Company name mismatch: form says '<form name>', CRM company <id> is '<CRM name>' — not renamed."
+
+RULE 21 — NO DUPLICATE COMPANIES
+  Before create_company, check the contact's live person record for an existing company_id and use it if present. Never create a company to attach to a deal when the contact already has one. If create_company returns DUPLICATE_COMPANY, use the returned ID; do not retry. Set force: true only when Chad explicitly says to create a separate company.
+  - The live check is get_person (search_people also returns a live company_id for small result sets). When creating a company for a contact, pass person_id to create_company; PERSON_HAS_COMPANY means the same as DUPLICATE_COMPANY — use existing_company_id, do not retry.
+  - DUPLICATE_CHECK_FAILED: nothing was created. Do not retry; tell Chad.
 
 == NEVER DO THESE ==
 - Use a company Pipeline record ID as a security entry ID — always use get_security_ids
