@@ -1261,7 +1261,7 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "search_companies",
-            "description": "Search Pipeline CRM companies by name using conditions[company_name]. Use this to find a specific company record.",
+            "description": "Search Pipeline CRM companies by name against the LIVE Pipeline API (conditions[company_name]; also searches the root name and first distinctive word). Use this to find a specific company record.",
             "inputSchema": {"json": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}
         }
     },
@@ -1355,9 +1355,11 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "create_company",
-            "description": "Create a new company record in Pipeline CRM.",
+            "description": "Create a new company record in Pipeline CRM. Runs a live duplicate check first (fuzzy name + website domain) and refuses with DUPLICATE_COMPANY (returning the existing ID) on a match. When creating a company for a contact, pass person_id: if the contact's live record already has a company, it refuses with PERSON_HAS_COMPANY. On either error, use the returned existing_company_id and do not retry.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "name": {"type": "string"},
+                "person_id": {"type": "integer", "description": "The contact this company is being created for, if any. If their live record already has a company_id, nothing is created and that company is returned."},
+                "force": {"type": "boolean", "description": "Bypass the duplicate and person-has-company guards. Set true ONLY when Chad has explicitly said to create a separate company. Always disclose the bypassed matches in your reply."},
                 "summary": {"type": "string", "description": SUMMARY_RULES},
                 "org_type": {"type": "integer", "description": "Org type entry ID e.g. 6677589=Private Company, 5103523=Unicorn, 6298036=Public Company, 4497856=GP:VC, 444501=GP:PE, 444492=LP:Family Office"},
                 "last_round_pps": {"type": "number", "description": "Last round price per share"},
@@ -1788,11 +1790,111 @@ def _company_match_score(query, name):
     return None
 
 
+def _normalize_domain(url):
+    """'https://www.Abseil.ai/about' -> 'abseil.ai'. Scheme, www., path, port and query are ignored."""
+    s = (url or "").strip().lower()
+    s = re.sub(r"^[a-z][a-z0-9+.-]*://", "", s)
+    s = re.split(r"[/?#]", s, 1)[0].split(":")[0].strip(".")
+    if s.startswith("www."):
+        s = s[4:]
+    return s if "." in s else ""
+
+
+def _company_search_terms(name, website=None):
+    """Live-search terms for a company: the full name, its root (noise words stripped), the first
+    distinctive token, and the website's domain label (abseil.ai -> 'abseil')."""
+    terms = []
+    def add(t):
+        t = (t or "").strip()
+        if len(t) >= 3 and t.lower() not in {x.lower() for x in terms}:
+            terms.append(t)
+    add(name)
+    core = _company_tokens(name)
+    add(" ".join(core))
+    if core and len(core[0]) >= 4:
+        add(core[0])
+    dom = _normalize_domain(website)
+    if dom:
+        add(dom.split(".")[0])
+    return terms
+
+
+def _live_company_search(term, max_pages=10):
+    """GET /companies.json?conditions[company_name]=term, all pages, from the LIVE Pipeline API.
+    Returns a list of company dicts, or None if the API call failed (callers decide the fallback)."""
+    out, page, pages = [], 1, 1
+    while page <= pages and page <= max_pages:
+        r = call_pipeline_api("GET", f"/companies.json?conditions[company_name]={urllib.parse.quote(term)}"
+                                     f"&per_page=200&page={page}")
+        if r["status"] != 200 or not isinstance(r["data"], dict):
+            logger.warning(f"live company search {term!r} page {page}: HTTP {r['status']}")
+            return None
+        data = r["data"]
+        out.extend(data.get("entries", data.get("companies", data.get("data", []))) or [])
+        pages = (data.get("pagination") or {}).get("pages", 1) or 1
+        page += 1
+    return out
+
+
+def find_live_company_duplicates(name, website=None):
+    """Live duplicate check for create_company — never reads the hourly companies.json snapshot.
+    Matches on fuzzy name (_company_match_score) and on normalized website domain.
+    Returns (matches, error): matches sorted best-first; error is set when the API could not be read."""
+    candidates, error = {}, None
+    for term in _company_search_terms(name, website):
+        found = _live_company_search(term)
+        if found is None:
+            error = f"live company search failed for {term!r}"
+            continue
+        for c in found:
+            if c.get("id") is not None:
+                candidates[c["id"]] = c
+    dom = _normalize_domain(website)
+    matches = []
+    for c in candidates.values():
+        score = _company_match_score(name, c.get("name"))
+        reason = None
+        if dom and _normalize_domain(c.get("web") or c.get("website")) == dom:
+            score, reason = -1, f"same website domain ({dom})"
+        elif score is not None:
+            reason = "name match"
+        if reason:
+            matches.append((score, len(c.get("name") or ""), {
+                "id": c["id"], "name": c.get("name"), "web": c.get("web"), "match": reason,
+                "url": f"https://app.pipelinecrm.com/companies/{c['id']}"}))
+    matches.sort(key=lambda x: (x[0], x[1]))
+    return [m for _, _, m in matches], error
+
+
+def live_person_company(person_id):
+    """(company_id, company_name) from the LIVE person record, or (None, None). Raises on API failure."""
+    r = call_pipeline_api("GET", f"/people/{int(person_id)}.json")
+    if r["status"] != 200 or not isinstance(r["data"], dict):
+        raise RuntimeError(f"GET /people/{person_id}.json returned HTTP {r['status']}")
+    p = r["data"]
+    cid = p.get("company_id") or (p.get("company") or {}).get("id")
+    return (int(cid) if cid else None), (p.get("company_name") or (p.get("company") or {}).get("name"))
+
+
 def _execute_tool_inner(tool_name, tool_input):
 
     if tool_name == "search_companies":
         query = tool_input['name'].lower().strip()
-        companies = get_snapshot("companies.json")
+        # Live API first — the hourly companies.json snapshot misses companies created in the last hour
+        # (e.g. by a signup), which caused duplicate creates. Snapshot only if the API is unreachable.
+        companies, live_failed = {}, False
+        for term in _company_search_terms(tool_input['name']):
+            found = _live_company_search(term, max_pages=3)
+            if found is None:
+                live_failed = True
+                break
+            for c in found:
+                companies[c.get("id")] = c
+        if live_failed:
+            logger.warning("search_companies: live API failed, falling back to snapshot")
+            companies = get_snapshot("companies.json")
+        else:
+            companies = list(companies.values())
         scored = []
         for c in companies:
             s = _company_match_score(query, c.get("name"))
@@ -1829,9 +1931,19 @@ def _execute_tool_inner(tool_name, tool_input):
                     matches.append(p)
             if len(matches) >= 10:
                 break
-        return [{"id": p["id"], "first_name": p.get("first_name"), "last_name": p.get("last_name"),
-                 "email": p.get("email"), "company_name": p.get("company_name"),
-                 "custom_fields": p.get("custom_fields", {})} for p in matches] or {"results": [], "message": "No matches found"}
+        out = [{"id": p["id"], "first_name": p.get("first_name"), "last_name": p.get("last_name"),
+                "email": p.get("email"), "company_id": p.get("company_id"), "company_name": p.get("company_name"),
+                "custom_fields": p.get("custom_fields", {})} for p in matches]
+        # The snapshot's company link can be up to an hour stale (e.g. a signup just linked the person to a
+        # new company). Refresh it live for small result sets so the agent never creates a second company.
+        if len(out) <= 3:
+            for row in out:
+                try:
+                    row["company_id"], row["company_name"] = live_person_company(row["id"])
+                    row["company_source"] = "live"
+                except Exception as e:
+                    logger.warning(f"search_people: live company refresh failed for {row['id']}: {e}")
+        return out or {"results": [], "message": "No matches found"}
 
     elif tool_name == "get_person":
         pid = int(tool_input['person_id'])
@@ -1981,6 +2093,22 @@ def _execute_tool_inner(tool_name, tool_input):
                 fields.pop(k)
             logger.warning(f"entity-form guard: person {tool_input['person_id']} — dropped {blocked_address}; "
                            f"triggered by {entity_trigger}")
+        # A free-text company_name on a person who is already linked to a company (live record) would relink
+        # them by name and can spawn a parallel company. Keep the existing link; an explicit company_id still works.
+        kept_company = None
+        if fields.get("company_name") and not fields.get("company_id"):
+            try:
+                p_cid, p_cname = live_person_company(tool_input["person_id"])
+            except Exception as e:
+                p_cid, p_cname = None, None
+                logger.warning(f"update_person: live company check failed for {tool_input['person_id']}: {e}")
+            if p_cid:
+                dropped = fields.pop("company_name")
+                kept_company = {"existing_company_id": p_cid, "existing_company_name": p_cname,
+                                "dropped_company_name": dropped,
+                                "note": f"Person is already linked to '{p_cname}' (company_id {p_cid}); company_name "
+                                        f"'{dropped}' was NOT written. Pass company_id explicitly only if Chad says "
+                                        f"the person moved to a different company."}
         # Split standard fields from custom fields
         standard = {}
         custom = {}
@@ -2020,6 +2148,8 @@ def _execute_tool_inner(tool_name, tool_input):
             notes["blocked_downgrades"] = blocked_downgrades
         if phone_flags:
             notes["phone_flags"] = phone_flags
+        if kept_company:
+            notes["company_link_kept"] = kept_company
         if blocked_address:
             notes["blocked_address_fields"] = blocked_address
             notes["entity_guard_fired"] = (f"Entity-form guard dropped person address fields {blocked_address} "
@@ -2148,6 +2278,36 @@ def _execute_tool_inner(tool_name, tool_input):
         summary_error = check_company_summary(tool_input.get("summary"))
         if summary_error:
             return {"success": False, "error": summary_error}
+        force = bool(tool_input.get("force"))
+        # Guard 1: the contact (live record) already has a company — use it, never create one.
+        if tool_input.get("person_id") and not force:
+            try:
+                p_cid, p_cname = live_person_company(tool_input["person_id"])
+            except Exception as e:
+                return {"success": False, "error": "DUPLICATE_CHECK_FAILED",
+                        "message": f"Could not read the live person record ({e}). Nothing was created. "
+                                   "Do NOT retry create_company; report this to Chad."}
+            if p_cid:
+                return {"success": False, "error": "PERSON_HAS_COMPANY",
+                        "existing_company_id": p_cid, "existing_company_name": p_cname,
+                        "url": f"https://app.pipelinecrm.com/companies/{p_cid}",
+                        "message": f"Person {tool_input['person_id']} is already linked to '{p_cname}' "
+                                   f"(company_id {p_cid}). Nothing was created. Use this company_id; do not retry."}
+        # Guard 2: live duplicate check (name + website domain) — never the hourly snapshot.
+        dups, dup_error = find_live_company_duplicates(tool_input["name"], tool_input.get("website"))
+        if not force:
+            if dups:
+                best = dups[0]
+                return {"success": False, "error": "DUPLICATE_COMPANY",
+                        "existing_company_id": best["id"], "existing_company_name": best["name"],
+                        "match": best["match"], "url": best["url"], "other_matches": dups[1:5],
+                        "message": f"Company already exists: '{best['name']}' (company_id {best['id']}, "
+                                   f"{best['match']}). Nothing was created. Use this company_id; do not retry. "
+                                   "Only set force: true if Chad explicitly said to create a separate company."}
+            if dup_error:
+                return {"success": False, "error": "DUPLICATE_CHECK_FAILED",
+                        "message": f"Live duplicate check could not complete ({dup_error}). Nothing was created. "
+                                   "Do NOT retry create_company; report this to Chad."}
         company_data = {"name": tool_input["name"]}
         if tool_input.get("summary"):
             company_data["description"] = tool_input["summary"]
@@ -2177,12 +2337,16 @@ def _execute_tool_inner(tool_name, tool_input):
         result = call_pipeline_api("POST", "/companies.json", {"company": company_data})
         if result["status"] == 200:
             new_id = result["data"].get("id")
-            return {
+            out = {
                 "success": True,
                 "company_id": new_id,
                 "pipeline_url": f"https://app.pipelinecrm.com/companies/{new_id}",
                 "message": "Company created successfully."
             }
+            if force and dups:
+                out["bypassed_duplicates"] = dups[:5]
+                out["message"] += " force=true bypassed these existing matches — list them in your reply."
+            return out
         return {"success": False, "status": result["status"], "error": result["data"]}
 
     elif tool_name == "add_note":
