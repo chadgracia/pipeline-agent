@@ -1466,7 +1466,7 @@ TOOL_SPECS = [
     {
         "toolSpec": {
             "name": "web_search",
-            "description": "Search the web using DuckDuckGo. Use this to research a person or company — find their location, what they do, fund type, AUM, background, etc. Returns a list of result snippets and URLs. Call this before fetch_webpage to find the right URLs to visit.",
+            "description": "Search the web (Brave Search, DuckDuckGo fallback). Use this to research a person or company — find their location, what they do, fund type, AUM, background, etc. Returns a list of result snippets and URLs. Call this before fetch_webpage to find the right URLs to visit. For a new signup with only an email address, first search the exact email in quotes (e.g. \"mike@vidapw.com\"), then search the first name plus the company name derived from the domain. For financial advisors, also search the firm name plus 'adviserinfo' or 'CRD'. Only set a last name in Pipeline when a source shows the exact email address, or the firm clearly has one person with that first name; otherwise leave it and put the best candidate in the flag note for Chad.",
             "inputSchema": {"json": {"type": "object", "properties": {
                 "query": {"type": "string", "description": "Search query, e.g. 'Black Hill Capital Partners LLC investment manager'"}
             }, "required": ["query"]}}
@@ -2800,6 +2800,40 @@ def _execute_tool_inner(tool_name, tool_input):
         query = tool_input.get("query", "").strip()
         if not query:
             return {"error": "No query provided"}
+        import re as _re
+        # Primary: Brave Search API (DuckDuckGo blocks AWS datacenter IPs with a bot-check page).
+        brave_key = os.environ.get("BRAVE_API_KEY", "")
+        brave_reason = "BRAVE_API_KEY not set"
+        if brave_key:
+            brave_url = ("https://api.search.brave.com/res/v1/web/search?q="
+                         f"{urllib.parse.quote(query)}&count=8")
+            brave_req = urllib.request.Request(brave_url, headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": brave_key,
+            })
+            for attempt in range(2):
+                try:
+                    with urllib.request.urlopen(brave_req, timeout=10) as resp:
+                        data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                    results = []
+                    for r in (data.get("web") or {}).get("results") or []:
+                        results.append({
+                            "title": _re.sub(r'<[^>]+>', '', r.get("title") or "").strip(),
+                            "snippet": _re.sub(r'<[^>]+>', '', r.get("description") or "").strip(),
+                            "url": r.get("url") or "",
+                        })
+                    logger.info(f"web_search provider=brave results={len(results)} query={query!r}")
+                    return {"results": results}
+                except urllib.error.HTTPError as e:
+                    brave_reason = f"HTTP {e.code}"
+                    if e.code == 429 and attempt == 0:
+                        time.sleep(1.5)
+                        continue
+                    break
+                except Exception as e:
+                    brave_reason = str(e) or type(e).__name__
+                    break
+        # Fallback: DuckDuckGo HTML scrape.
         try:
             search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
             req = urllib.request.Request(search_url, headers={
@@ -2816,14 +2850,13 @@ def _execute_tool_inner(tool_name, tool_input):
                 title = _re.sub(r'<[^>]+>', '', title).strip()
                 snippet = _re.sub(r'<[^>]+>', '', snippet).strip()
                 results.append({"title": title, "snippet": snippet, "url": url})
+            logger.info(f"web_search provider=duckduckgo results={len(results)} query={query!r} brave_failed={brave_reason!r}")
             if not results:
-                # Fallback: just extract visible text
-                text = _re.sub(r'<[^>]+>', ' ', raw)
-                text = _re.sub(r'\s+', ' ', text).strip()
-                return {"results": [], "raw_text": text[:2000]}
+                return {"error": f"Web search unavailable (Brave failed: {brave_reason}; DuckDuckGo blocked)"}
             return {"results": results}
         except Exception as e:
-            return {"error": str(e)}
+            logger.info(f"web_search provider=duckduckgo results=0 query={query!r} brave_failed={brave_reason!r} error={e!r}")
+            return {"error": f"Web search unavailable (Brave failed: {brave_reason}; DuckDuckGo error: {e})"}
 
     elif tool_name == "fetch_webpage":
         url = tool_input.get("url", "").strip()
