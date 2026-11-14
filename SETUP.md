@@ -71,7 +71,7 @@ These are Pipeline CRM-specific magic numbers worth knowing about:
 - `custom_label_3954543=7043466` → "AWS Reg = Active".
 - `custom_label_3775335=6613673` → "Newsletter = Confirm".
 - Tag `3280123` → Whitelist.
-- Role `6596061` → Investor; Investor Level `7162165` → Substantive.
+- Role `6596061` → Investor; Investor Level `7161646` → Hold: Screen for Substantive (new signups never get deal access automatically).
 - Industry name → ID mapping is the `INDUSTRY_MAP` dict near the top of `lambda_function.py`.
 
 If a field ID changes in Pipeline, it has to change here too.

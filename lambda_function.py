@@ -1326,7 +1326,7 @@ TOOL_SPECS = [
                 "work_country": {"type": "string"},
                 "custom_label_3075382": {"type": "integer", "description": "Role: 6596061=Investor, 6438705=Intermediary"},
                 "custom_label_3759163": {"type": "integer", "description": "Transactor Type: 6484811=Family Office, 6484810=Natural Person, 6484812=Institution, 6484808=VC or PE Fund, 7037492=Hedge Fund, 6484813=Wealth Advisor, 6577160=Co-Broker, 6888332=Foreign Finder"},
-                "custom_label_3923758": {"type": "integer", "description": "Investor Level: 7162165=Substantive (default), 6950564=Qualified Purchaser, 7209227=Qualified Client, 6950563=Accredited Investor, 6950562=Non-Accredited, 7161646=Hold: Screen for Substantive, 6950561=Unknown"},
+                "custom_label_3923758": {"type": "integer", "description": "Investor Level: 7161646=Hold: Screen for Substantive (default for NEW web signups; never change an existing person's level), 7162165=Substantive, 6950564=Qualified Purchaser, 7209227=Qualified Client, 6950563=Accredited Investor, 6950562=Non-Accredited, 6950561=Unknown"},
                 "custom_label_3775335": {"type": "integer", "description": "Weekly Newsletter: 6613674=Subscribed, 6613673=Confirm, 6609023=Unsubscribed, 6546189=Hold, 6536755=No, 6546212=Screen, 6795370=No - Intermediary, 6795371=No - Colleague Point Person. Use No - Intermediary when Role = Intermediary."}
             }, "required": ["first_name", "last_name"]}}
         }
@@ -3472,7 +3472,7 @@ def lambda_handler(event, context):
                         f"- source_id=3581824 (AWS)\n"
                         f"- custom_label_3954543=[7043466] (AWS Reg=Active)\n"
                         f"- Newsletter=Confirm (6613673)\n"
-                        f"- Whitelist tag (3280123), Role=Investor (6596061), Investor Level=Substantive (7162165)\n"
+                        f"- Whitelist tag (3280123), Role=Investor (6596061), Investor Level=Hold: Screen for Substantive (7161646)\n"
                         f"- Research the person via web_search and fetch_webpage, set Transactor Type, city, summary\n"
                         f"- Return the Pipeline URL"
                     )

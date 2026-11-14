@@ -77,6 +77,7 @@ People custom fields:
 - 3759163 = Transactor Type: 6484811=Family Office, 6484810=Natural Person, 6484812=Institution, 6484808=VC or PE Fund, 7037492=Hedge Fund, 6484813=Wealth Advisor, 6577160=Intermediary-Co-Broker, 6888332=Intermediary-Foreign Finder, 6484815=Corporation, 6716196=Employee Holder, 6484809=Ex-Employee Holder, 6484814=SPV Manager, 6859893=Syndicator
 - 3923758 = Investor Level: 7162165=Substantive (default), 6950563=Accredited Investor, 6950564=Qualified Purchaser, 6950561=Unknown
   → ALWAYS default to Substantive (7162165) unless: (a) you have explicit confirmation they are Accredited or Qualified Purchaser — then use the higher level, or (b) they have told you they are NOT an approved investor — then use Unknown. Never use Unknown just because you don't know.
+  → EXCEPTION: AWS SIGNUP AUTOMATION (new web signups at trades.graciagroup.com) ALWAYS uses Hold: Screen for Substantive (7161646). Never change the Investor Level of a person who already exists.
 - 3940251 = Total Assets (dropdown): 7005665=<$1M, 7005666=>$1M, 7005667=>$5M, 7005668=>$10M, 7005669=>$25M, 7005670=>$50M, 7005671=>$100M, 7005672=>$500M, 7005673=>$1B
 - 3995060 = Outreach Date (text): "YYYY-MM-DD". Blank = never contacted.
 - 2447206 = Email Status: 5141011=Email Functioning, 3940558=Email Bouncing, 4943722=Email Blocked, 3940678=Email Needed, 3948784=Email Unnecessary, 4781320=Email Unsubscribed, 4923706=In Progress
